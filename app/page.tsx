@@ -25,7 +25,7 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 const db = getDatabase(app);
 
-// API GDIVE Paste kunci Anda di antara tanda kutip di bawah ini
+// API GDRIVE (Kunci Khusus Akses Google Drive)
 const DRIVE_API_KEY = "AIzaSyAXULPE6AodS8J80BGcOygeB0ek0pAakgQ";
 
 // ============================================================================
@@ -58,6 +58,7 @@ export default function App() {
   // --- SETTINGS (LINK DRIVE) STATE ---
   const [folderLinks, setFolderLinks] = useState<any>({});
   const [saveLinkStatus, setSaveLinkStatus] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // ============================================================================
   // 4. MENGAMBIL DATA SECARA REAL-TIME DARI FIREBASE
@@ -116,23 +117,25 @@ export default function App() {
   // 6. FUNGSI-FUNGSI TOMBOL
   // ============================================================================
   
-// Fungsi Simpan Link & Panggil Mesin AI Backend
+  // Fungsi Simpan Link & Panggil Mesin AI Backend
   const handleSaveLink = async (kabupaten: string) => {
-    if(!folderLinks[kabupaten]) return;
+    if(!folderLinks[kabupaten] || isSyncing) return;
+    
+    setIsSyncing(true);
     setSaveLinkStatus(`MEMPROSES FOLDER ${kabupaten} DENGAN AI... (HARAP TUNGGU)`);
     
     try {
       // 1. Simpan Link Asli ke Database
       await set(ref(db, `kalsel_links/${kabupaten}`), folderLinks[kabupaten]);
       
-      // 2. Panggil Mesin Backend (API Route) yang baru kita buat
+      // 2. Panggil Mesin Backend (API Route)
       const response = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           folderUrl: folderLinks[kabupaten], 
           kabupaten: kabupaten,
-          driveApiKey: DRIVE_API_KEY // Memanggil variabel yang ditambahkan di Langkah 1
+          driveApiKey: DRIVE_API_KEY
         })
       });
 
@@ -148,12 +151,14 @@ export default function App() {
       } else {
         setSaveLinkStatus(`GAGAL MEMBACA DRIVE: ${result.error}`);
       }
-
-      setTimeout(() => setSaveLinkStatus(''), 5000);
     } catch(err) {
-      setSaveLinkStatus('TERJADI KESALAHAN JARINGAN SAAT SYNC.');
+      setSaveLinkStatus('TERJADI KESALAHAN JARINGAN SAAT SINKRONISASI.');
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSaveLinkStatus(''), 5000);
     }
   };
+
   // Fungsi Simulasi Upload AI
   const handleSimulateUpload = async () => {
     setIsUploading(true);
@@ -180,10 +185,10 @@ export default function App() {
     try {
       await push(ref(db, 'kalsel_files'), extractedData);
       setUploadStatus('SUKSES! DATA TERSIMPAN DARI AI.');
-      setTimeout(() => { setIsUploading(false); setUploadStatus(''); }, 3000);
     } catch (err) {
       setUploadStatus('GAGAL MENYIMPAN KE DATABASE.');
-      setIsUploading(false);
+    } finally {
+      setTimeout(() => { setIsUploading(false); setUploadStatus(''); }, 3000);
     }
   };
 
@@ -333,7 +338,7 @@ export default function App() {
               </div>
 
               {saveLinkStatus && (
-                <div className="mb-4 p-4 bg-green-100 text-green-800 font-bold rounded-lg border border-green-200 animate-pulse">
+                <div className={`mb-4 p-4 font-bold rounded-lg border animate-pulse ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('KESALAHAN') ? 'bg-red-100 text-red-800 border-red-200' : 'bg-green-100 text-green-800 border-green-200'}`}>
                   {saveLinkStatus}
                 </div>
               )}
@@ -348,12 +353,14 @@ export default function App() {
                       className="flex-1 px-4 py-3 border border-gray-300 rounded-md normal-case text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none" 
                       value={folderLinks[kab] || ''} 
                       onChange={(e) => setFolderLinks({...folderLinks, [kab]: e.target.value})} 
+                      disabled={isSyncing}
                     />
                     <button 
                       onClick={() => handleSaveLink(kab)} 
-                      className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md transition-colors whitespace-nowrap"
+                      disabled={isSyncing || !folderLinks[kab]}
+                      className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      SIMPAN LINK
+                      {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & SYNC'}
                     </button>
                   </div>
                 ))}
@@ -443,7 +450,13 @@ export default function App() {
                           </td>
                           <td className="p-4 text-center">
                             <button 
-                              onClick={() => alert(`SISTEM AKAN MEMBUKA FILE: ${row.nama_sekolah}`)}
+                              onClick={() => {
+                                if (row.drive_url && row.drive_url !== "#") {
+                                  window.open(row.drive_url, '_blank');
+                                } else {
+                                  alert(`File asli belum tersedia untuk: ${row.nama_sekolah} \n(Data ini merupakan hasil uji coba simulasi)`);
+                                }
+                              }}
                               className="inline-flex items-center gap-2 text-xs bg-gray-800 hover:bg-emerald-600 text-white font-bold px-4 py-2 rounded-lg transition-colors shadow-sm"
                             >
                               <Download size={16} /> UNDUH

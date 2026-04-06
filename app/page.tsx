@@ -25,6 +25,9 @@ const firebaseConfig = {
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 const db = getDatabase(app);
 
+// API GDIVE Paste kunci Anda di antara tanda kutip di bawah ini
+const DRIVE_API_KEY = "AIzaSyAXULPE6AodS8J80BGcOygeB0ek0pAakgQ";
+
 // ============================================================================
 // 2. DAFTAR 13 KABUPATEN/KOTA DI KALSEL (HURUF KAPITAL)
 // ============================================================================
@@ -113,19 +116,44 @@ export default function App() {
   // 6. FUNGSI-FUNGSI TOMBOL
   // ============================================================================
   
-  // Fungsi Simpan Link ke Database
+// Fungsi Simpan Link & Panggil Mesin AI Backend
   const handleSaveLink = async (kabupaten: string) => {
     if(!folderLinks[kabupaten]) return;
-    setSaveLinkStatus(`MENYIMPAN LINK ${kabupaten}...`);
+    setSaveLinkStatus(`MEMPROSES FOLDER ${kabupaten} DENGAN AI... (HARAP TUNGGU)`);
+    
     try {
+      // 1. Simpan Link Asli ke Database
       await set(ref(db, `kalsel_links/${kabupaten}`), folderLinks[kabupaten]);
-      setSaveLinkStatus(`BERHASIL! LINK ${kabupaten} TERSIMPAN DI DATABASE.`);
-      setTimeout(() => setSaveLinkStatus(''), 3000);
+      
+      // 2. Panggil Mesin Backend (API Route) yang baru kita buat
+      const response = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          folderUrl: folderLinks[kabupaten], 
+          kabupaten: kabupaten,
+          driveApiKey: DRIVE_API_KEY // Memanggil variabel yang ditambahkan di Langkah 1
+        })
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        // 3. Simpan Hasil Ekstraksi AI ke Database Utama
+        await push(ref(db, 'kalsel_files'), {
+          ...result.data,
+          uploadedAt: serverTimestamp()
+        });
+        setSaveLinkStatus(`BERHASIL! 1 FILE DARI ${kabupaten} SELESAI DIBACA AI & TERSIMPAN.`);
+      } else {
+        setSaveLinkStatus(`GAGAL MEMBACA DRIVE: ${result.error}`);
+      }
+
+      setTimeout(() => setSaveLinkStatus(''), 5000);
     } catch(err) {
-      setSaveLinkStatus('GAGAL MENYIMPAN. CEK RULES FIREBASE ANDA.');
+      setSaveLinkStatus('TERJADI KESALAHAN JARINGAN SAAT SYNC.');
     }
   };
-
   // Fungsi Simulasi Upload AI
   const handleSimulateUpload = async () => {
     setIsUploading(true);

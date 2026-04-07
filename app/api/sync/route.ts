@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// =======================================================================
-// JURUS SAKTI: Paksa Vercel menunggu sampai 60 detik (Anti Timeout)
-export const maxDuration = 60; 
+// Cegah sistem menggunakan cache lama
 export const dynamic = 'force-dynamic';
-// =======================================================================
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 

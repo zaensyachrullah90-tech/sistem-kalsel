@@ -46,7 +46,7 @@ export async function POST(req: Request) {
       data: {
         ...extractedData,
         kabupaten: kabupaten,
-        kategori: kategori, // Menentukan ini masuk ke VERKOM atau ABSENSI
+        kategori: kategori, 
         drive_url: `https://drive.google.com/file/d/${file.id}/view`
       }
     });

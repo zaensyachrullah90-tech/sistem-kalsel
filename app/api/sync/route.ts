@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
+// =======================================================================
+// JURUS SAKTI: Paksa Vercel menunggu sampai 60 detik (Anti Timeout)
+export const maxDuration = 60; 
+export const dynamic = 'force-dynamic';
+// =======================================================================
+
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 export async function POST(req: Request) {
@@ -21,11 +27,11 @@ export async function POST(req: Request) {
     const base64Data = Buffer.from(arrayBuffer).toString('base64');
     const mimeType = file.mimeType || 'application/pdf';
 
-    // 2. PROMPT CERDAS (Memberikan nama file sebagai contekan jika foto buram)
+    // 2. PROMPT CERDAS (Memberikan nama file sebagai contekan)
     const prompt = `Anda adalah asisten arsip data yang sangat teliti.
     Nama file asli dokumen/gambar ini adalah: "${file.name}".
     
-    Tugas Anda: Ekstrak data dari gambar ini. Jika teks di dalam gambar kurang jelas, GUNAKAN INFORMASI DARI NAMA FILE di atas untuk menebak nama sekolah, bulan, dan tahunnya.
+    Tugas Anda: Ekstrak data dari gambar/dokumen ini. Jika teks di dalam gambar kurang jelas, GUNAKAN INFORMASI DARI NAMA FILE di atas untuk menebak nama sekolah, bulan, dan tahunnya.
     
     Keluarkan data dalam format JSON murni seperti ini:
     {
@@ -63,7 +69,7 @@ export async function POST(req: Request) {
     });
 
   } catch (error: any) {
-    // Menangkap Error 429 dari Google
+    // Menangkap Error 429 dari Google atau Timeout
     const errorMessage = error.message || "Gagal memproses AI.";
     return NextResponse.json({ error: errorMessage }, { status: errorMessage.includes('429') || errorMessage.includes('QUOTA') ? 429 : 500 });
   }

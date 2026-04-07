@@ -6,7 +6,7 @@ import { getDatabase, ref, onValue, push, set, serverTimestamp } from 'firebase/
 import { 
   FolderOpen, FileText, UploadCloud, Search, Download, 
   BarChart2, Menu, X, ChevronDown, ChevronRight, FileCheck, 
-  Settings, Link as LinkIcon, CheckCircle, Loader2, Lock, ShieldCheck
+  Settings, Link as LinkIcon, CheckCircle, Loader2, Lock, ShieldCheck, Database
 } from 'lucide-react';
 
 // ============================================================================
@@ -34,37 +34,34 @@ const KABUPATEN_KOTA = [
 ];
 
 // ============================================================================
-// 2. FUNGSI RADAR SCANNER ULTIMATE (ANTI POTONG & ANTI LEWAT)
+// 2. LOGIKA MENGGALI FOLDER BERLAPIS (RECURSIVE SCANNER)
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allPdfs: any[] = [];
-  let pageToken = ''; // SISTEM BUKA HALAMAN SELANJUTNYA AGAR FILE TIDAK TERPOTONG
+  let pageToken = ''; 
   
   try {
     do {
-      // PERBAIKAN: Hanya mencari File PDF dan Folder saja agar jauh lebih cepat dan akurat
+      // Hanya mencari Folder & PDF
       const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
       const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${pageToken}` : ''}`;
       
       const res = await fetch(url);
       const data = await res.json();
 
-      if (data.error) {
-        console.error("API Error dari Google:", data.error.message);
-        break; // Hentikan jika folder ini error (misal di-lock), tapi jangan hancurkan proses
-      }
+      if (data.error) break;
 
       for (const file of data.files || []) {
         if (file.mimeType === 'application/vnd.google-apps.folder') {
-          // Selami folder anak ini (Rekursif)
+          // JIKA KETEMU FOLDER: Gali lagi ke dalamnya! (Membuka folder sampai terdalam)
           const subPdfs = await scanFoldersRecursively(file.id, apiKey);
           allPdfs = allPdfs.concat(subPdfs);
         } else if (file.mimeType === 'application/pdf') {
+          // JIKA KETEMU PDF: Ambil dan kumpulkan!
           allPdfs.push(file);
         }
       }
-      
-      pageToken = data.nextPageToken || ''; // Jika masih ada sisa file, lanjut ke halaman berikutnya
+      pageToken = data.nextPageToken || ''; 
     } while (pageToken);
     
   } catch (error) {
@@ -97,6 +94,8 @@ export default function App() {
   
   const [verkomLinks, setVerkomLinks] = useState<any>({});
   const [absenLinks, setAbsenLinks] = useState<any>({});
+  
+  // STATE NOTIFIKASI LOADING DETAIL
   const [saveLinkStatus, setSaveLinkStatus] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -129,7 +128,7 @@ export default function App() {
   }, []);
 
   // ============================================================================
-  // 5. PENCARIAN CEPAT (SMART SEARCH)
+  // 5. PENCARIAN CEPAT
   // ============================================================================
   const filteredData = useMemo(() => {
     return filesData.filter(item => {
@@ -149,7 +148,7 @@ export default function App() {
   }, [filesData]);
 
   // ============================================================================
-  // 6. FUNGSI TOMBOL
+  // 6. FUNGSI TOMBOL & NOTIFIKASI LOADING DETAIL
   // ============================================================================
   
   const handleLogin = (e: React.FormEvent) => {
@@ -176,7 +175,8 @@ export default function App() {
 
       await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
-      setSaveLinkStatus(`🔍 MENYELAMI FOLDER ${kabupaten} BERLAPIS... (MENCARI PDF)`);
+      // NOTIFIKASI 1: LOADING MENGGALI FOLDER
+      setSaveLinkStatus(`🔍 SEDANG MENGGALI FOLDER BERLAPIS DI ${kabupaten}... (Mencari semua PDF)`);
       const allFoundPdfs = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
       if(allFoundPdfs.length === 0) {
@@ -187,9 +187,12 @@ export default function App() {
       }
 
       let processedCount = 0;
-      for (const pdfFile of allFoundPdfs) {
+      for (let i = 0; i < allFoundPdfs.length; i++) {
+        const pdfFile = allFoundPdfs[i];
         processedCount++;
-        setSaveLinkStatus(`🤖 AI MEMBACA FILE ${processedCount} DARI ${allFoundPdfs.length}... (${pdfFile.name})`);
+        
+        // NOTIFIKASI 2: LOADING MEMBACA FILE DENGAN AI
+        setSaveLinkStatus(`🤖 AI SEDANG MEMBACA FILE (${processedCount} dari ${allFoundPdfs.length}): "${pdfFile.name}"...`);
 
         try {
           const response = await fetch('/api/sync', {
@@ -206,20 +209,24 @@ export default function App() {
           if (response.ok) {
             const result = await response.json();
             if (result.success) {
+              
+              // NOTIFIKASI 3: LOADING MEREKAM KE DATABASE
+              setSaveLinkStatus(`💾 PEREKAMAN DATABASE: Menyimpan data sekolah ${result.data.nama_sekolah}...`);
+              
               await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
               setLatestUploadedCard(result.data);
             }
           }
         } catch (apiErr) {
           console.error("Gagal sinkron file:", pdfFile.name);
-          // Biarkan jalan terus meskipun 1 file gagal
         }
 
-        // --- SISTEM REM OTOMATIS: Jeda 2,5 detik agar tidak diblokir Gemini AI ---
+        // Jeda 2.5 detik untuk AI
         await new Promise(resolve => setTimeout(resolve, 2500));
       }
 
-      setSaveLinkStatus(`✅ SELESAI! ${allFoundPdfs.length} FILE DARI ${kabupaten} TERSIMPAN SEBAGAI ${kategori}.`);
+      // NOTIFIKASI 4: SELESAI
+      setSaveLinkStatus(`✅ SELESAI! ${allFoundPdfs.length} FILE DARI ${kabupaten} BERHASIL DIREKAM SEBAGAI ${kategori}.`);
     } catch(err: any) {
       setSaveLinkStatus(`❌ GAGAL: ${err.message || 'KESALAHAN JARINGAN.'}`);
     } finally {
@@ -247,6 +254,7 @@ export default function App() {
     };
 
     try {
+      setUploadStatus('MEREKAM DATA KE DATABASE...');
       await push(ref(db, 'kalsel_files'), extractedData);
       setUploadStatus('SUKSES! DATA TERSIMPAN.');
       setLatestUploadedCard(extractedData); 
@@ -260,7 +268,7 @@ export default function App() {
   const toggleMenu = (menu: string) => { setExpandedMenus((prev: any) => ({ ...prev, [menu]: !prev[menu] })); };
 
   // ============================================================================
-  // 7. TAMPILAN ANTARMUKA 
+  // 7. TAMPILAN ANTARMUKA (FULL UTUH 100%)
   // ============================================================================
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800 font-sans uppercase">
@@ -356,7 +364,7 @@ export default function App() {
                   SELAMAT DATANG DI SISTEM E-ARSIP KALIMANTAN SELATAN. APLIKASI INI MENGGUNAKAN <strong className="text-emerald-700">GOOGLE DRIVE</strong> SEBAGAI PENYIMPANAN FILE DAN <strong className="text-emerald-700">GEMINI 2.5 FLASH</strong> UNTUK MEMBACA ISI PDF SECARA OTOMATIS.
                 </p>
                 <p className="text-sm text-gray-500 bg-gray-50 p-4 rounded-lg border">
-                  <strong>PANDUAN ADMIN:</strong> Masuk ke menu Pengaturan Link, masukkan password admin untuk membuka fitur sinkronisasi, dan Anda dapat memisahkan link drive antara berkas VERKOM dan ABSENSI.
+                  <strong>PANDUAN ADMIN:</strong> Masuk ke menu Pengaturan Link, masukkan password admin untuk membuka fitur sinkronisasi. Sistem dapat membaca folder Google Drive yang berlapis-lapis.
                 </p>
               </div>
             </div>
@@ -384,15 +392,16 @@ export default function App() {
                       <div className="p-3 bg-blue-100 text-blue-700 rounded-lg"><LinkIcon size={24} /></div>
                       <div>
                         <h3 className="text-xl font-bold text-gray-800">MANAJEMEN LINK FOLDER DRIVE</h3>
-                        <p className="text-sm text-gray-500 font-semibold mt-1">SISTEM AKAN MEMBACA FOLDER BERLAPIS HINGGA KE AKARNYA.</p>
+                        <p className="text-sm text-gray-500 font-semibold mt-1">SISTEM AKAN MENGGALI FOLDER BERLAPIS HINGGA TERDALAM.</p>
                       </div>
                     </div>
                     <button onClick={() => setIsAdmin(false)} className="text-sm font-bold text-red-500 bg-red-50 px-4 py-2 rounded-lg hover:bg-red-100">LOGOUT</button>
                   </div>
 
+                  {/* KOTAK NOTIFIKASI LOADING DETAIL */}
                   {saveLinkStatus && (
-                    <div className={`mb-6 p-4 font-bold flex items-center gap-3 rounded-lg border ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('KESALAHAN') || saveLinkStatus.includes('TIDAK DITEMUKAN') ? 'bg-red-100 text-red-800 border-red-200' : saveLinkStatus.includes('SELESAI') ? 'bg-green-100 text-green-800 border-green-200' : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'}`}>
-                      {isSyncing && <Loader2 className="animate-spin" size={20} />}
+                    <div className={`mb-6 p-4 font-bold flex items-center gap-3 rounded-lg border shadow-sm ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('KESALAHAN') || saveLinkStatus.includes('TIDAK DITEMUKAN') ? 'bg-red-100 text-red-800 border-red-200' : saveLinkStatus.includes('SELESAI') ? 'bg-green-100 text-green-800 border-green-200' : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'}`}>
+                      {isSyncing && saveLinkStatus.includes('MEREKAM') ? <Database className="animate-bounce" size={20} /> : (isSyncing && <Loader2 className="animate-spin" size={20} />)}
                       {saveLinkStatus}
                     </div>
                   )}
@@ -409,8 +418,8 @@ export default function App() {
                             </label>
                             <div className="flex flex-col gap-2">
                               <input type="url" placeholder="HTTPS://DRIVE.GOOGLE.COM/FOLDERS/..." className="w-full px-4 py-3 border border-gray-300 rounded-md normal-case text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white" value={verkomLinks[kab] || ''} onChange={(e) => setVerkomLinks({...verkomLinks, [kab]: e.target.value})} disabled={isSyncing}/>
-                              <button onClick={() => handleSaveLink(kab, 'VERKOM')} disabled={isSyncing || !verkomLinks[kab]} className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md disabled:opacity-50 text-sm">
-                                {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & SYNC VERKOM'}
+                              <button onClick={() => handleSaveLink(kab, 'VERKOM')} disabled={isSyncing || !verkomLinks[kab]} className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md disabled:opacity-50 text-sm shadow-sm transition-transform active:scale-95">
+                                {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & BACA VERKOM'}
                               </button>
                             </div>
                           </div>
@@ -421,8 +430,8 @@ export default function App() {
                             </label>
                             <div className="flex flex-col gap-2">
                               <input type="url" placeholder="HTTPS://DRIVE.GOOGLE.COM/FOLDERS/..." className="w-full px-4 py-3 border border-gray-300 rounded-md normal-case text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white" value={absenLinks[kab] || ''} onChange={(e) => setAbsenLinks({...absenLinks, [kab]: e.target.value})} disabled={isSyncing}/>
-                              <button onClick={() => handleSaveLink(kab, 'ABSEN')} disabled={isSyncing || !absenLinks[kab]} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md disabled:opacity-50 text-sm">
-                                {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & SYNC ABSENSI'}
+                              <button onClick={() => handleSaveLink(kab, 'ABSEN')} disabled={isSyncing || !absenLinks[kab]} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md disabled:opacity-50 text-sm shadow-sm transition-transform active:scale-95">
+                                {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & BACA ABSENSI'}
                               </button>
                             </div>
                           </div>
@@ -433,9 +442,9 @@ export default function App() {
                 </div>
               )}
 
-              {/* CARD PREVIEW SETELAH SYNC BERHASIL */}
+              {/* CARD PREVIEW SETELAH MEREKAM DATABASE */}
               {latestUploadedCard && (
-                <div className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-xl shadow-sm flex items-start gap-4">
+                <div className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-xl shadow-sm flex items-start gap-4 animate-bounce-short">
                   <CheckCircle className="text-emerald-500 mt-1" size={32} />
                   <div>
                     <h4 className="text-sm font-bold text-emerald-800 mb-1">BERHASIL DITAMBAHKAN KE DATABASE</h4>
@@ -464,7 +473,8 @@ export default function App() {
                  </div>
 
                  {uploadStatus && (
-                   <div className={`mt-4 p-4 font-bold rounded-lg ${uploadStatus.includes('SUKSES') ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>
+                   <div className={`mt-4 p-4 font-bold flex items-center justify-center gap-3 rounded-lg ${uploadStatus.includes('SUKSES') ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>
+                     {isUploading && uploadStatus.includes('MEREKAM') ? <Database className="animate-bounce" size={20} /> : (isUploading && <Loader2 className="animate-spin" size={20}/>)}
                      {uploadStatus}
                    </div>
                  )}

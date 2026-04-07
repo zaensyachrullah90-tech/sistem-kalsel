@@ -9,29 +9,29 @@ export async function POST(req: Request) {
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    // 1. Download File (Bisa PDF, JPG, atau PNG)
+    // 1. Download File (PDF / JPG / PNG) dari Drive API
     const downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveApiKey}&supportsAllDrives=true`;
     const fileResponse = await fetch(downloadUrl);
     
     if (!fileResponse.ok) {
-       return NextResponse.json({ error: "Gagal mengunduh file dari Drive." }, { status: 400 });
+       return NextResponse.json({ error: "Gagal mengunduh file. Format tidak didukung / File terlalu besar." }, { status: 400 });
     }
 
     const arrayBuffer = await fileResponse.arrayBuffer();
     const base64Data = Buffer.from(arrayBuffer).toString('base64');
-
-    // MENDETEKSI JENIS FILE (Gambar / PDF)
+    
+    // Pastikan mimetype sesuai dengan file yang dikirim
     const mimeType = file.mimeType || 'application/pdf';
 
-    // 2. Baca dengan Gemini AI
-    const prompt = `Baca dokumen atau gambar ini. Ekstrak data berikut dalam format JSON murni.
+    // 2. Baca dengan Gemini AI (Prompt Super Kuat)
+    const prompt = `Anda adalah asisten arsip. Baca dokumen/gambar ini dan ekstrak data berikut dalam format JSON murni.
     {
-      "nama_sekolah": "...",
-      "kecamatan": "...",
-      "bulan": "...",
-      "tahun": "..."
+      "nama_sekolah": "Nama sekolah di dokumen (misal: SDN 1 CONTOH), jika tidak terbaca isi dengan BELUM TERBACA",
+      "kecamatan": "Nama kecamatan, jika tidak terbaca isi dengan BELUM TERBACA",
+      "bulan": "Nama bulan (Januari-Desember), jika tidak terbaca isi dengan BELUM TERBACA",
+      "tahun": "Tahun (misal: 2024), jika tidak terbaca isi dengan BELUM TERBACA"
     }
-    Jika data tidak ditemukan, isi dengan "TIDAK ADA". Jawab HANYA dengan JSON murni.`;
+    Hanya kembalikan JSON murni, jangan ada teks lain.`;
 
     const aiResult = await model.generateContent([
       prompt,
@@ -39,10 +39,16 @@ export async function POST(req: Request) {
     ]);
 
     let aiText = aiResult.response.text();
-    aiText = aiText.replace(/```json/g, "").replace(/```/g, "").trim();
     
-    const extractedData = JSON.parse(aiText);
+    // EKSTRAKTOR JSON ANTI-GAGAL (Memaksa mengambil data di dalam kurung kurawal)
+    const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return NextResponse.json({ error: "AI gagal menemukan teks yang bisa dibaca pada gambar/dokumen ini." }, { status: 400 });
+    }
+    
+    const extractedData = JSON.parse(jsonMatch[0]);
 
+    // 3. Kembalikan Hasil ke Frontend
     return NextResponse.json({
       success: true,
       data: {
@@ -55,6 +61,6 @@ export async function POST(req: Request) {
     });
 
   } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Gagal memproses API." }, { status: 500 });
+    return NextResponse.json({ error: error.message || "Timeout Vercel / Gagal memproses AI." }, { status: 500 });
   }
 }

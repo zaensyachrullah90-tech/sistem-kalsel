@@ -128,7 +128,6 @@ export default function App() {
       return matchMenu && matchDistrict && matchSearch;
     });
 
-    // URUTKAN: NAMA SEKOLAH -> TAHUN -> BULAN
     result.sort((a, b) => {
       const namaA = (a.nama_sekolah || "").toUpperCase();
       const namaB = (b.nama_sekolah || "").toUpperCase();
@@ -175,9 +174,6 @@ export default function App() {
     }
   };
 
-  // ============================================================================
-  // LOGIKA SINKRONISASI AI (ANTI ERROR 429 & PELAN TAPI PASTI)
-  // ============================================================================
   const handleSaveLink = async (kabupaten: string, kategori: 'VERKOM' | 'ABSEN') => {
     const currentLink = kategori === 'VERKOM' ? verkomLinks[kabupaten] : absenLinks[kabupaten];
     if(!currentLink || isSyncing) return;
@@ -205,21 +201,20 @@ export default function App() {
       for (let i = 0; i < allFoundFiles.length; i++) {
         const file = allFoundFiles[i];
         
-        // 1. CEK GANDA ID DRIVE
         const existingDriveIds = filesData.map(f => f.drive_id);
         if (existingDriveIds.includes(file.id)) {
           setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File "${file.name}" sudah ada.`);
-          await new Promise(r => setTimeout(r, 300));
+          await new Promise(r => setTimeout(r, 200));
           continue; 
         }
 
         let isSuccess = false;
         let retryCount = 0;
 
-        // 2. LOOPING RETRY JIKA GOOGLE MARAH (MAX 3 KALI COBA)
+        // MESIN TURBO: Jeda dipercepat menjadi 1.5 detik berkat Multi-Key!
         while (!isSuccess && retryCount < 3) {
           try {
-            setSaveLinkStatus(`🤖 AI MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
+            setSaveLinkStatus(`🚀 AI (MULTI-KEY) MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
 
             const response = await fetch('/api/sync', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -230,21 +225,19 @@ export default function App() {
               const errData = await response.json().catch(()=>({error:""}));
               const errMsg = errData.error || "";
               
-              // JIKA KENA ERROR 429 QUOTA EXCEEDED
               if (errMsg.includes("429") || errMsg.includes("QUOTA") || response.status === 429) {
-                 setSaveLinkStatus(`⏳ GOOGLE AI LIMIT. Istirahat 30 DETIK agar tidak diblokir...`);
-                 await new Promise(r => setTimeout(r, 30000)); 
+                 setSaveLinkStatus(`⚡ MENGGANTI KUNCI API... (Mencoba Ulang)`);
+                 await new Promise(r => setTimeout(r, 3000)); 
                  retryCount++;
                  continue; 
               } else {
                  setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}". Timeout/Terlalu Besar. Lanjut file lain...`);
-                 break; // Keluar loop retry, lanjut file berikutnya
+                 break; 
               }
             }
 
             const result = await response.json();
             if (result.success) {
-              // 3. CEK GANDA NAMA SEKOLAH & BULAN
               const isDuplicateData = filesData.some(f => 
                 f.nama_sekolah === result.data.nama_sekolah && 
                 f.bulan === result.data.bulan && 
@@ -266,16 +259,15 @@ export default function App() {
               isSuccess = true;
             }
           } catch (apiErr) { 
-            setSaveLinkStatus(`⚠️ KONEKSI PUTUS. Menunggu 5 detik...`);
-            await new Promise(r => setTimeout(r, 5000));
+            setSaveLinkStatus(`⚠️ KONEKSI PUTUS. Mengganti API Key...`);
+            await new Promise(r => setTimeout(r, 2000));
             retryCount++;
           }
         }
         
-        // JEDA 5 DETIK SETIAP SELESAI 1 FILE
+        // JEDA TURBO (HANYA 1.5 DETIK)
         if (isSuccess) {
-          setSaveLinkStatus(`⏳ Jeda 5 detik... (Keamanan Server Vercel)`);
-          await new Promise(r => setTimeout(r, 5000)); 
+          await new Promise(r => setTimeout(r, 1500)); 
         }
       }
 
@@ -417,7 +409,7 @@ export default function App() {
                       <div className="p-3 bg-blue-100 text-blue-700 rounded-lg"><LinkIcon size={24} /></div>
                       <div>
                         <h3 className="text-xl font-bold text-gray-800">CONTROL PANEL ADMIN</h3>
-                        <p className="text-sm text-gray-500 font-semibold mt-1">Sistem Otomatis Menolak File Ganda (Duplikat).</p>
+                        <p className="text-sm text-gray-500 font-semibold mt-1">Mesin Turbo Multi-Key API Aktif.</p>
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -442,7 +434,7 @@ export default function App() {
                             <label className="text-xs font-bold text-gray-600 flex items-center gap-2"><FileCheck size={14} className="text-emerald-600"/> FOLDER VERKOM</label>
                             <div className="flex flex-col gap-2">
                               <input type="url" placeholder="HTTPS://DRIVE..." className="w-full px-4 py-3 border border-gray-300 rounded-md normal-case text-sm bg-white" value={verkomLinks[kab] || ''} onChange={(e) => setVerkomLinks({...verkomLinks, [kab]: e.target.value})} disabled={isSyncing}/>
-                              <button onClick={() => handleSaveLink(kab, 'VERKOM')} disabled={isSyncing || !verkomLinks[kab]} className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md disabled:opacity-50 text-sm">
+                              <button onClick={() => handleSaveLink(kab, 'VERKOM')} disabled={isSyncing || !verkomLinks[kab]} className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md disabled:opacity-50 text-sm shadow-sm transition-transform active:scale-95">
                                 {isSyncing ? 'SINKRONISASI...' : 'SYNC VERKOM'}
                               </button>
                             </div>
@@ -451,7 +443,7 @@ export default function App() {
                             <label className="text-xs font-bold text-gray-600 flex items-center gap-2"><FileText size={14} className="text-blue-600"/> FOLDER ABSENSI</label>
                             <div className="flex flex-col gap-2">
                               <input type="url" placeholder="HTTPS://DRIVE..." className="w-full px-4 py-3 border border-gray-300 rounded-md normal-case text-sm bg-white" value={absenLinks[kab] || ''} onChange={(e) => setAbsenLinks({...absenLinks, [kab]: e.target.value})} disabled={isSyncing}/>
-                              <button onClick={() => handleSaveLink(kab, 'ABSEN')} disabled={isSyncing || !absenLinks[kab]} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md disabled:opacity-50 text-sm">
+                              <button onClick={() => handleSaveLink(kab, 'ABSEN')} disabled={isSyncing || !absenLinks[kab]} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md disabled:opacity-50 text-sm shadow-sm transition-transform active:scale-95">
                                 {isSyncing ? 'SINKRONISASI...' : 'SYNC ABSENSI'}
                               </button>
                             </div>
@@ -543,7 +535,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V6.0 (FINAL DEPLOY)</span>
+                <span>SISTEM E-ARSIP KALSEL V7.0 (MULTI-KEY TURBO)</span>
               </div>
             </div>
           )}

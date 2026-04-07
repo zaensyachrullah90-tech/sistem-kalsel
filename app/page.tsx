@@ -39,7 +39,7 @@ const BULAN_ORDER: Record<string, number> = {
 };
 
 // ============================================================================
-// 2. RADAR: MENCARI PDF, JPG, JPEG, PNG
+// 2. RADAR: MENCARI PDF, JPG, JPEG, PNG SAMPAI AKAR FOLDER
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allFiles: any[] = [];
@@ -48,7 +48,7 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
   try {
     do {
       const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='image/jpeg' or mimeType='image/png' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
-      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? \`&pageToken=\${pageToken}\` : ''}`;
+      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${pageToken}` : ''}`;
       
       const res = await fetch(url);
       const data = await res.json();
@@ -208,7 +208,7 @@ export default function App() {
         // 1. CEK GANDA ID DRIVE
         const existingDriveIds = filesData.map(f => f.drive_id);
         if (existingDriveIds.includes(file.id)) {
-          setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File sudah ada.`);
+          setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File "${file.name}" sudah ada.`);
           await new Promise(r => setTimeout(r, 300));
           continue; 
         }
@@ -232,13 +232,13 @@ export default function App() {
               
               // JIKA KENA ERROR 429 QUOTA EXCEEDED
               if (errMsg.includes("429") || errMsg.includes("QUOTA") || response.status === 429) {
-                 setSaveLinkStatus(`⏳ GOOGLE AI LIMIT. Istirahat 60 DETIK agar tidak diblokir...`);
-                 await new Promise(r => setTimeout(r, 60000)); // ISTIRAHAT 1 MENIT
+                 setSaveLinkStatus(`⏳ GOOGLE AI LIMIT. Istirahat 30 DETIK agar tidak diblokir...`);
+                 await new Promise(r => setTimeout(r, 30000)); 
                  retryCount++;
-                 continue; // Coba file yang sama lagi
+                 continue; 
               } else {
-                 setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}". File rusak/terlalu besar.`);
-                 break; // Keluar dari loop retry, lanjut ke file berikutnya
+                 setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}". Timeout/Terlalu Besar. Lanjut file lain...`);
+                 break; // Keluar loop retry, lanjut file berikutnya
               }
             }
 
@@ -266,16 +266,16 @@ export default function App() {
               isSuccess = true;
             }
           } catch (apiErr) { 
-            setSaveLinkStatus(`⚠️ KONEKSI PUTUS. Menunggu 10 detik...`);
-            await new Promise(r => setTimeout(r, 10000));
+            setSaveLinkStatus(`⚠️ KONEKSI PUTUS. Menunggu 5 detik...`);
+            await new Promise(r => setTimeout(r, 5000));
             retryCount++;
           }
         }
         
-        // JEDA 6 DETIK SETIAP SELESAI 1 FILE AGAR AMAN DARI BLOKIR GOOGLE (Max 10 File per menit)
+        // JEDA 5 DETIK SETIAP SELESAI 1 FILE
         if (isSuccess) {
-          setSaveLinkStatus(`⏳ Jeda 6 detik... (Keamanan Server)`);
-          await new Promise(r => setTimeout(r, 6000)); 
+          setSaveLinkStatus(`⏳ Jeda 5 detik... (Keamanan Server Vercel)`);
+          await new Promise(r => setTimeout(r, 5000)); 
         }
       }
 
@@ -543,7 +543,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V5.0 (ANTI BLOKIR & PINTAR)</span>
+                <span>SISTEM E-ARSIP KALSEL V6.0 (FINAL DEPLOY)</span>
               </div>
             </div>
           )}

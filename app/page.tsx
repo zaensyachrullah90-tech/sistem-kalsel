@@ -34,31 +34,41 @@ const KABUPATEN_KOTA = [
 ];
 
 // ============================================================================
-// 2. FUNGSI RADAR SCANNER (MENEMBUS FOLDER BERLAPIS)
+// 2. FUNGSI RADAR SCANNER ULTIMATE (ANTI POTONG & ANTI LEWAT)
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allPdfs: any[] = [];
+  let pageToken = ''; // SISTEM BUKA HALAMAN SELANJUTNYA AGAR FILE TIDAK TERPOTONG
+  
   try {
-    const url = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+trashed=false&key=${apiKey}&fields=files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
-    
-    const res = await fetch(url);
-    const data = await res.json();
+    do {
+      // PERBAIKAN: Hanya mencari File PDF dan Folder saja agar jauh lebih cepat dan akurat
+      const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
+      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${pageToken}` : ''}`;
+      
+      const res = await fetch(url);
+      const data = await res.json();
 
-    if (data.error) {
-      console.error("API Error dari Google:", data.error.message);
-      return allPdfs;
-    }
-
-    for (const file of data.files || []) {
-      if (file.mimeType === 'application/vnd.google-apps.folder') {
-        const subPdfs = await scanFoldersRecursively(file.id, apiKey);
-        allPdfs = allPdfs.concat(subPdfs);
-      } else if (file.mimeType === 'application/pdf') {
-        allPdfs.push(file);
+      if (data.error) {
+        console.error("API Error dari Google:", data.error.message);
+        break; // Hentikan jika folder ini error (misal di-lock), tapi jangan hancurkan proses
       }
-    }
+
+      for (const file of data.files || []) {
+        if (file.mimeType === 'application/vnd.google-apps.folder') {
+          // Selami folder anak ini (Rekursif)
+          const subPdfs = await scanFoldersRecursively(file.id, apiKey);
+          allPdfs = allPdfs.concat(subPdfs);
+        } else if (file.mimeType === 'application/pdf') {
+          allPdfs.push(file);
+        }
+      }
+      
+      pageToken = data.nextPageToken || ''; // Jika masih ada sisa file, lanjut ke halaman berikutnya
+    } while (pageToken);
+    
   } catch (error) {
-    console.error("Gagal scanning folder", error);
+    console.error("Gagal scanning folder:", error);
   }
   return allPdfs;
 };
@@ -69,7 +79,7 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
 export default function App() {
   const [filesData, setFilesData] = useState<any[]>([]);
   
-  // --- UI STATE LAMA (DIPERTAHANKAN) ---
+  // --- UI STATE ---
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [activeMenu, setActiveMenu] = useState('DASHBOARD'); 
   const [activeDistrict, setActiveDistrict] = useState('');
@@ -80,7 +90,7 @@ export default function App() {
   const [uploadStatus, setUploadStatus] = useState('');
   const [latestUploadedCard, setLatestUploadedCard] = useState<any>(null); 
   
-  // --- STATE BARU: ADMIN & PEMISAHAN LINK ---
+  // --- STATE ADMIN & PEMISAHAN LINK ---
   const [isAdmin, setIsAdmin] = useState(false);
   const [passInput, setPassInput] = useState('');
   const [authError, setAuthError] = useState('');
@@ -94,7 +104,6 @@ export default function App() {
   // 4. MENGAMBIL DATA FIREBASE
   // ============================================================================
   useEffect(() => {
-    // Ambil Data File
     const dbRef = ref(db, 'kalsel_files');
     const unsubscribeFiles = onValue(dbRef, (snapshot) => {
       const data = snapshot.val();
@@ -106,13 +115,11 @@ export default function App() {
       }
     });
 
-    // Ambil Data Link Verkom
     const vLinkRef = ref(db, 'kalsel_links/VERKOM');
     const unsubscribeVLinks = onValue(vLinkRef, (snapshot) => {
       if(snapshot.val()) setVerkomLinks(snapshot.val());
     });
 
-    // Ambil Data Link Absen
     const aLinkRef = ref(db, 'kalsel_links/ABSEN');
     const unsubscribeALinks = onValue(aLinkRef, (snapshot) => {
       if(snapshot.val()) setAbsenLinks(snapshot.val());
@@ -122,7 +129,7 @@ export default function App() {
   }, []);
 
   // ============================================================================
-  // 5. PENCARIAN CEPAT
+  // 5. PENCARIAN CEPAT (SMART SEARCH)
   // ============================================================================
   const filteredData = useMemo(() => {
     return filesData.filter(item => {
@@ -145,7 +152,6 @@ export default function App() {
   // 6. FUNGSI TOMBOL
   // ============================================================================
   
-  // A. FUNGSI LOGIN ADMIN
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (passInput === "Kalsel 123") {
@@ -156,7 +162,6 @@ export default function App() {
     }
   };
 
-  // B. FUNGSI SYNC BERLAPIS (DENGAN KATEGORI)
   const handleSaveLink = async (kabupaten: string, kategori: 'VERKOM' | 'ABSEN') => {
     const currentLink = kategori === 'VERKOM' ? verkomLinks[kabupaten] : absenLinks[kabupaten];
     
@@ -166,17 +171,16 @@ export default function App() {
     
     try {
       const folderIdMatch = currentLink.match(/folders\/([a-zA-Z0-9-_]+)/);
-      if (!folderIdMatch) throw new Error("Link Drive tidak valid.");
+      if (!folderIdMatch) throw new Error("Link Drive tidak valid. Pastikan format mengandung /folders/");
       const rootFolderId = folderIdMatch[1];
 
-      // Simpan Link sesuai kategori
       await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
       setSaveLinkStatus(`🔍 MENYELAMI FOLDER ${kabupaten} BERLAPIS... (MENCARI PDF)`);
       const allFoundPdfs = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
       if(allFoundPdfs.length === 0) {
-        setSaveLinkStatus(`⚠️ TIDAK DITEMUKAN PDF. Pastikan akses folder "Siapa saja memiliki link".`);
+        setSaveLinkStatus(`⚠️ TIDAK DITEMUKAN PDF. Pastikan akses SELURUH sub-folder adalah "Siapa saja memiliki link".`);
         setIsSyncing(false);
         setTimeout(() => setSaveLinkStatus(''), 6000);
         return;
@@ -187,24 +191,32 @@ export default function App() {
         processedCount++;
         setSaveLinkStatus(`🤖 AI MEMBACA FILE ${processedCount} DARI ${allFoundPdfs.length}... (${pdfFile.name})`);
 
-        const response = await fetch('/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            file: pdfFile, 
-            kabupaten: kabupaten, 
-            kategori: kategori, // Kirim kategori ke API
-            driveApiKey: DRIVE_API_KEY 
-          })
-        });
+        try {
+          const response = await fetch('/api/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              file: pdfFile, 
+              kabupaten: kabupaten, 
+              kategori: kategori,
+              driveApiKey: DRIVE_API_KEY 
+            })
+          });
 
-        if (response.ok) {
-          const result = await response.json();
-          if (result.success) {
-            await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
-            setLatestUploadedCard(result.data);
+          if (response.ok) {
+            const result = await response.json();
+            if (result.success) {
+              await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
+              setLatestUploadedCard(result.data);
+            }
           }
+        } catch (apiErr) {
+          console.error("Gagal sinkron file:", pdfFile.name);
+          // Biarkan jalan terus meskipun 1 file gagal
         }
+
+        // --- SISTEM REM OTOMATIS: Jeda 2,5 detik agar tidak diblokir Gemini AI ---
+        await new Promise(resolve => setTimeout(resolve, 2500));
       }
 
       setSaveLinkStatus(`✅ SELESAI! ${allFoundPdfs.length} FILE DARI ${kabupaten} TERSIMPAN SEBAGAI ${kategori}.`);
@@ -216,7 +228,6 @@ export default function App() {
     }
   };
 
-  // C. FUNGSI UPLOAD MANUAL (SIMULASI - DIPERTAHANKAN)
   const handleSimulateUpload = async () => {
     setIsUploading(true);
     setUploadStatus('MENGUPLOAD FILE...');
@@ -249,12 +260,12 @@ export default function App() {
   const toggleMenu = (menu: string) => { setExpandedMenus((prev: any) => ({ ...prev, [menu]: !prev[menu] })); };
 
   // ============================================================================
-  // 7. TAMPILAN ANTARMUKA (FULL DESAIN LAMA + FITUR BARU)
+  // 7. TAMPILAN ANTARMUKA 
   // ============================================================================
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800 font-sans uppercase">
       
-      {/* ----------------- SIDEBAR KIRI ----------------- */}
+      {/* ----------------- SIDEBAR ----------------- */}
       <aside className={`${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'} transition-all duration-300 bg-emerald-900 text-white flex flex-col fixed md:relative z-20 h-full overflow-y-auto shadow-xl`}>
         <div className="p-4 flex items-center justify-between bg-emerald-950">
           <h1 className="font-bold text-lg tracking-wider flex items-center gap-2">
@@ -299,7 +310,7 @@ export default function App() {
         </nav>
       </aside>
 
-      {/* ----------------- KONTEN KANAN ----------------- */}
+      {/* ----------------- KONTEN UTAMA ----------------- */}
       <main className="flex-1 flex flex-col h-full overflow-hidden">
         
         <header className="bg-white shadow-sm p-4 flex items-center justify-between">
@@ -312,7 +323,6 @@ export default function App() {
               {(activeMenu === 'VERKOM' || activeMenu === 'ABSEN') && `MENU ${activeMenu} ${activeDistrict ? `- KABUPATEN ${activeDistrict}` : ''}`}
             </h2>
           </div>
-          {/* INDIKATOR ADMIN */}
           {isAdmin && (
             <div className="flex items-center gap-2 bg-emerald-100 px-4 py-2 rounded-lg text-emerald-700 text-xs font-bold border border-emerald-200">
               <ShieldCheck size={16}/> ADMIN AKTIF
@@ -322,7 +332,7 @@ export default function App() {
 
         <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
           
-          {/* ================= TAMPILAN DASHBOARD LENGKAP ================= */}
+          {/* DASHBOARD LENGKAP */}
           {activeMenu === 'DASHBOARD' && (
             <div className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -340,7 +350,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* KOTAK INFORMASI SISTEM (DIKEMBALIKAN) */}
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 leading-relaxed">
                 <h3 className="text-lg font-bold mb-4 border-b pb-2">INFORMASI SISTEM</h3>
                 <p className="text-gray-600 mb-4">
@@ -353,11 +362,9 @@ export default function App() {
             </div>
           )}
 
-          {/* ================= TAMPILAN SETTINGS (LOGIN ADMIN & KELOLA LINK) ================= */}
+          {/* SETTINGS (ADMIN & KELOLA LINK) */}
           {activeMenu === 'SETTINGS' && (
             <div className="max-w-4xl mx-auto space-y-6">
-              
-              {/* JIKA BELUM LOGIN */}
               {!isAdmin ? (
                 <div className="bg-white p-10 rounded-xl shadow-sm border border-gray-100 text-center max-w-md mx-auto mt-10">
                   <div className="w-20 h-20 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center mx-auto mb-6"><Lock size={40}/></div>
@@ -371,8 +378,6 @@ export default function App() {
                   </form>
                 </div>
               ) : (
-                
-                /* JIKA SUDAH LOGIN ADMIN */
                 <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-100">
                   <div className="flex items-center justify-between mb-6 border-b pb-4">
                     <div className="flex items-center gap-3">
@@ -398,7 +403,6 @@ export default function App() {
                         <h4 className="font-black text-lg text-emerald-800 mb-4 border-b pb-2">{kab}</h4>
                         
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                          {/* INPUT LINK VERKOM */}
                           <div className="space-y-2">
                             <label className="text-xs font-bold text-gray-600 flex items-center gap-2">
                               <FileCheck size={14} className="text-emerald-600"/> LINK FOLDER VERKOM
@@ -411,7 +415,6 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* INPUT LINK ABSEN */}
                           <div className="space-y-2">
                             <label className="text-xs font-bold text-gray-600 flex items-center gap-2">
                               <FileText size={14} className="text-blue-600"/> LINK FOLDER ABSENSI
@@ -424,14 +427,13 @@ export default function App() {
                             </div>
                           </div>
                         </div>
-
                       </div>
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* CARD MUNCUL SETELAH SYNC BERHASIL */}
+              {/* CARD PREVIEW SETELAH SYNC BERHASIL */}
               {latestUploadedCard && (
                 <div className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-xl shadow-sm flex items-start gap-4">
                   <CheckCircle className="text-emerald-500 mt-1" size={32} />
@@ -447,7 +449,7 @@ export default function App() {
             </div>
           )}
 
-          {/* ================= TAMPILAN UPLOAD AI (DIPERTAHANKAN) ================= */}
+          {/* UPLOAD MANUAL (DIPERTAHANKAN) */}
           {activeMenu === 'UPLOAD' && (
              <div className="max-w-2xl mx-auto space-y-6">
                <div className="bg-white p-8 rounded-xl text-center border border-gray-100 shadow-sm">
@@ -483,7 +485,7 @@ export default function App() {
              </div>
           )}
 
-          {/* ================= TAMPILAN TABEL DATA LENGKAP ================= */}
+          {/* TABEL DATA LENGKAP */}
           {(activeMenu === 'VERKOM' || activeMenu === 'ABSEN') && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 h-full flex flex-col">
               

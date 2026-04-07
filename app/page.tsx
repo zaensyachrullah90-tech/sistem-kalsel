@@ -6,11 +6,11 @@ import { getDatabase, ref, onValue, push, set, remove, serverTimestamp } from 'f
 import { 
   FolderOpen, FileText, UploadCloud, Search, Download, 
   BarChart2, Menu, X, ChevronDown, ChevronRight, FileCheck, 
-  Settings, Link as LinkIcon, CheckCircle, Loader2, Lock, ShieldCheck, Database, AlertTriangle, Trash2
+  Settings, Link as LinkIcon, CheckCircle, Loader2, Lock, ShieldCheck, Database, AlertTriangle, Trash2, Edit, Save
 } from 'lucide-react';
 
 // ============================================================================
-// 1. KONFIGURASI FIREBASE
+// 1. KONFIGURASI FIREBASE (REALTIME DATABASE)
 // ============================================================================
 const firebaseConfig = {
   apiKey: "AIzaSyDStGoBoQXhwkwA-XFntQqO5tyFxQAY9_I",
@@ -39,7 +39,7 @@ const BULAN_ORDER: Record<string, number> = {
 };
 
 // ============================================================================
-// 2. RADAR: MENCARI PDF, JPG, JPEG, PNG SAMPAI AKAR FOLDER
+// 2. RADAR SCANNER (REKURSIF MULTI FORMAT)
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allFiles: any[] = [];
@@ -94,6 +94,12 @@ export default function App() {
   const [saveLinkStatus, setSaveLinkStatus] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // --- STATE UNTUK CRUD (EDIT DATA MANUAL) ---
+  const [editingData, setEditingData] = useState<any>(null);
+
+  // ============================================================================
+  // 4. MENGAMBIL DATA FIREBASE (REALTIME)
+  // ============================================================================
   useEffect(() => {
     const dbRef = ref(db, 'kalsel_files');
     const unsubscribeFiles = onValue(dbRef, (snapshot) => {
@@ -119,6 +125,9 @@ export default function App() {
     return () => { unsubscribeFiles(); unsubscribeVLinks(); unsubscribeALinks(); };
   }, []);
 
+  // ============================================================================
+  // 5. PENCARIAN & SORTIR CERDAS
+  // ============================================================================
   const filteredData = useMemo(() => {
     let result = filesData.filter(item => {
       const matchMenu = item.kategori === activeMenu;
@@ -153,6 +162,9 @@ export default function App() {
     return { total, verkom, absen };
   }, [filesData]);
 
+  // ============================================================================
+  // 6. FUNGSI ADMIN: CRUD & SINKRONISASI
+  // ============================================================================
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (passInput === "Kalsel 123") {
@@ -163,14 +175,30 @@ export default function App() {
   };
 
   const handleResetDatabase = async () => {
-    const confirmReset = window.confirm("⚠️ PERINGATAN KERAS! ⚠️\n\nApakah Anda yakin ingin MENGHAPUS SELURUH DATA ARSIP (Dashboard)?\nTindakan ini TIDAK BISA DIBATALKAN!");
-    if (confirmReset) {
-      const confirmTwice = window.confirm("Ketik OK jika Anda benar-benar yakin ingin mereset Database Kalsel.");
-      if(confirmTwice) {
+    if (window.confirm("⚠️ PERINGATAN KERAS!\n\nAnda yakin ingin MENGHAPUS SELURUH DATA ARSIP?")) {
+      if(window.confirm("Ketik OK jika Anda benar-benar yakin mereset Database Kalsel.")) {
         await remove(ref(db, 'kalsel_files'));
-        alert("✅ DATABASE TELAH BERHASIL DIRESET! Semua data kembali kosong.");
+        alert("✅ DATABASE BERHASIL DIRESET!");
         setLatestUploadedCard(null);
       }
+    }
+  };
+
+  // CRUD: FUNGSI HAPUS 1 BARIS
+  const handleDeleteItem = async (id: string, nama: string) => {
+    if (window.confirm(`Yakin ingin menghapus arsip: ${nama}?`)) {
+      await remove(ref(db, `kalsel_files/${id}`));
+    }
+  };
+
+  // CRUD: FUNGSI SIMPAN EDIT
+  const handleSaveEdit = async () => {
+    if (editingData) {
+      await set(ref(db, `kalsel_files/${editingData.id}`), {
+        ...editingData,
+        // Hapus properties lokal jika ada
+      });
+      setEditingData(null); // Tutup modal
     }
   };
 
@@ -201,6 +229,7 @@ export default function App() {
       for (let i = 0; i < allFoundFiles.length; i++) {
         const file = allFoundFiles[i];
         
+        // 1. CEK GANDA ID DRIVE (Mencegah upload file yang persis sama)
         const existingDriveIds = filesData.map(f => f.drive_id);
         if (existingDriveIds.includes(file.id)) {
           setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File "${file.name}" sudah ada.`);
@@ -211,7 +240,6 @@ export default function App() {
         let isSuccess = false;
         let retryCount = 0;
 
-        // MESIN TURBO: Jeda dipercepat menjadi 1.5 detik berkat Multi-Key!
         while (!isSuccess && retryCount < 3) {
           try {
             setSaveLinkStatus(`🚀 AI (MULTI-KEY) MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
@@ -231,27 +259,29 @@ export default function App() {
                  retryCount++;
                  continue; 
               } else {
-                 setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}". Timeout/Terlalu Besar. Lanjut file lain...`);
+                 setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}". Melewati...`);
                  break; 
               }
             }
 
             const result = await response.json();
             if (result.success) {
+              
+              // Cek Ganda Nama Sekolah & Bulan (Kecuali jika tulisannya MEMBUTUHKAN EDIT MANUAL)
               const isDuplicateData = filesData.some(f => 
                 f.nama_sekolah === result.data.nama_sekolah && 
                 f.bulan === result.data.bulan && 
                 f.tahun === result.data.tahun && 
                 f.kategori === kategori &&
-                f.nama_sekolah !== "BELUM TERBACA" 
+                f.nama_sekolah !== "MEMBUTUHKAN EDIT MANUAL"
               ) || newlyAddedItems.some(f => 
-                f.nama_sekolah === result.data.nama_sekolah && f.bulan === result.data.bulan && f.kategori === kategori && f.nama_sekolah !== "BELUM TERBACA"
+                f.nama_sekolah === result.data.nama_sekolah && f.bulan === result.data.bulan && f.kategori === kategori && f.nama_sekolah !== "MEMBUTUHKAN EDIT MANUAL"
               );
 
               if (isDuplicateData) {
                 setSaveLinkStatus(`🚫 DITOLAK: Data ${result.data.nama_sekolah} (${result.data.bulan}) sudah ada!`);
               } else {
-                setSaveLinkStatus(`💾 PEREKAMAN: Menyimpan ${result.data.nama_sekolah}...`);
+                setSaveLinkStatus(`💾 PEREKAMAN DATABASE: Menyimpan data...`);
                 await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
                 newlyAddedItems.push(result.data);
                 setLatestUploadedCard(result.data);
@@ -265,10 +295,7 @@ export default function App() {
           }
         }
         
-        // JEDA TURBO (HANYA 1.5 DETIK)
-        if (isSuccess) {
-          await new Promise(r => setTimeout(r, 1500)); 
-        }
+        if (isSuccess) await new Promise(r => setTimeout(r, 1500)); 
       }
 
       setSaveLinkStatus(`✅ SINKRONISASI SELESAI UNTUK ${kabupaten}!`);
@@ -305,8 +332,47 @@ export default function App() {
   const toggleMenu = (menu: string) => { setExpandedMenus((prev: any) => ({ ...prev, [menu]: !prev[menu] })); };
 
   return (
-    <div className="flex h-screen bg-gray-50 text-gray-800 font-sans uppercase">
+    <div className="flex h-screen bg-gray-50 text-gray-800 font-sans uppercase relative">
       
+      {/* MODAL CRUD: EDIT DATA (HANYA MUNCUL JIKA ADA DATA YANG DI-EDIT) */}
+      {editingData && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+            <div className="bg-emerald-600 p-4 flex justify-between items-center text-white">
+              <h3 className="font-black text-lg flex items-center gap-2"><Edit size={20}/> EDIT ARSIP MANUAL</h3>
+              <button onClick={() => setEditingData(null)}><X /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-gray-500">NAMA SEKOLAH</label>
+                <input type="text" className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-emerald-500 font-bold" value={editingData.nama_sekolah} onChange={e => setEditingData({...editingData, nama_sekolah: e.target.value.toUpperCase()})} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-gray-500">KECAMATAN</label>
+                <input type="text" className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-emerald-500 font-bold" value={editingData.kecamatan} onChange={e => setEditingData({...editingData, kecamatan: e.target.value.toUpperCase()})} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-gray-500">BULAN</label>
+                  <input type="text" className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-emerald-500 font-bold" value={editingData.bulan} onChange={e => setEditingData({...editingData, bulan: e.target.value.toUpperCase()})} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-gray-500">TAHUN</label>
+                  <input type="text" className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-emerald-500 font-bold" value={editingData.tahun} onChange={e => setEditingData({...editingData, tahun: e.target.value})} />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-gray-500">LINK ASLI FILE (INFO)</label>
+                <input type="text" disabled className="w-full p-3 border rounded-lg bg-gray-100 text-xs normal-case" value={editingData.drive_url} />
+              </div>
+              <button onClick={handleSaveEdit} className="w-full bg-emerald-600 text-white p-4 rounded-xl font-black mt-4 hover:bg-emerald-700 flex items-center justify-center gap-2">
+                <Save size={20}/> SIMPAN PERUBAHAN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* SIDEBAR */}
       <aside className={`${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'} transition-all duration-300 bg-emerald-900 text-white flex flex-col fixed md:relative z-20 h-full overflow-y-auto shadow-xl`}>
         <div className="p-4 flex items-center justify-between bg-emerald-950">
@@ -364,7 +430,7 @@ export default function App() {
             </h2>
           </div>
           {isAdmin && (
-            <div className="flex items-center gap-2 bg-emerald-100 px-4 py-2 rounded-lg text-emerald-700 text-xs font-bold border border-emerald-200">
+            <div className="flex items-center gap-2 bg-emerald-100 px-4 py-2 rounded-lg text-emerald-700 text-xs font-bold border border-emerald-200 shadow-sm">
               <ShieldCheck size={16}/> ADMIN AKTIF
             </div>
           )}
@@ -383,7 +449,7 @@ export default function App() {
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 leading-relaxed">
                 <h3 className="text-lg font-bold mb-4 border-b pb-2">INFORMASI SISTEM</h3>
                 <p className="text-gray-600 mb-4">SELAMAT DATANG DI SISTEM E-ARSIP KALIMANTAN SELATAN. APLIKASI INI MENGGUNAKAN <strong className="text-emerald-700">GOOGLE DRIVE</strong> SEBAGAI PENYIMPANAN FILE DAN <strong className="text-emerald-700">GEMINI 2.5 FLASH</strong> UNTUK MEMBACA ISI PDF SECARA OTOMATIS.</p>
-                <p className="text-sm text-gray-500 bg-gray-50 p-4 rounded-lg border"><strong>PANDUAN ADMIN:</strong> Masuk ke menu Pengaturan Link, masukkan password admin untuk mengatur link, mensinkronisasi data anti-ganda, dan mereset dashboard.</p>
+                <p className="text-sm text-gray-500 bg-gray-50 p-4 rounded-lg border"><strong>PANDUAN ADMIN:</strong> Masuk ke menu Pengaturan Link, masukkan password admin untuk mengatur link, mensinkronisasi data anti-ganda, melakukan CRUD (Edit/Hapus), dan mereset dashboard.</p>
               </div>
             </div>
           )}
@@ -409,7 +475,7 @@ export default function App() {
                       <div className="p-3 bg-blue-100 text-blue-700 rounded-lg"><LinkIcon size={24} /></div>
                       <div>
                         <h3 className="text-xl font-bold text-gray-800">CONTROL PANEL ADMIN</h3>
-                        <p className="text-sm text-gray-500 font-semibold mt-1">Mesin Turbo Multi-Key API Aktif.</p>
+                        <p className="text-sm text-gray-500 font-semibold mt-1">Sistem Otomatis Menangkap Paksa Data Gagal Baca (CRUD).</p>
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -487,7 +553,7 @@ export default function App() {
              </div>
           )}
 
-          {/* TABEL DATA LENGKAP DENGAN SORTIR CERDAS */}
+          {/* TABEL DATA LENGKAP DENGAN CRUD ADMIN */}
           {(activeMenu === 'VERKOM' || activeMenu === 'ABSEN') && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 h-full flex flex-col">
               <div className="p-5 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between flex-wrap gap-4">
@@ -505,7 +571,7 @@ export default function App() {
                       <th className="p-4 font-black border-b">NAMA SEKOLAH</th>
                       <th className="p-4 font-black border-b">KECAMATAN</th>
                       <th className="p-4 font-black border-b">BULAN / TAHUN</th>
-                      <th className="p-4 font-black border-b text-center">AKSI</th>
+                      <th className="p-4 font-black border-b text-center">AKSI {isAdmin && '(ADMIN)'}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -513,9 +579,12 @@ export default function App() {
                       <tr><td colSpan={5} className="p-10 text-center text-gray-500 font-bold text-lg">TIDAK ADA DATA {activeMenu} TERSIMPAN.</td></tr>
                     ) : (
                       filteredData.map((row, i) => (
-                        <tr key={row.id} className="border-b hover:bg-emerald-50 transition-colors">
+                        <tr key={row.id} className={`border-b transition-colors ${row.nama_sekolah === "MEMBUTUHKAN EDIT MANUAL" ? "bg-red-50 hover:bg-red-100" : "hover:bg-emerald-50"}`}>
                           <td className="p-4 font-bold text-center text-gray-600">{i + 1}</td>
-                          <td className="p-4 font-bold text-gray-900 text-lg">{row.nama_sekolah}</td>
+                          <td className="p-4 font-bold text-gray-900 text-lg">
+                            {row.nama_sekolah}
+                            {row.nama_sekolah === "MEMBUTUHKAN EDIT MANUAL" && <span className="ml-2 bg-red-500 text-white text-[10px] px-2 py-1 rounded-full animate-pulse">! CEK MANUAL</span>}
+                          </td>
                           <td className="p-4 text-sm font-semibold text-gray-700">{row.kecamatan}</td>
                           <td className="p-4 text-sm">
                             <span className="bg-emerald-100 text-emerald-800 px-3 py-1.5 rounded-md text-xs font-bold border border-emerald-200">
@@ -523,9 +592,23 @@ export default function App() {
                             </span>
                           </td>
                           <td className="p-4 text-center">
-                            <button onClick={() => { if (row.drive_url && row.drive_url !== "#") window.open(row.drive_url, '_blank'); else alert('Data simulasi tidak ada file asli.'); }} className={`inline-flex items-center gap-2 text-xs text-white font-bold px-4 py-2 rounded-lg shadow-sm ${activeMenu === 'VERKOM' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                              <Download size={16} /> UNDUH
-                            </button>
+                            <div className="flex justify-center gap-2">
+                              {/* TOMBOL CRUD (EDIT & HAPUS) - HANYA MUNCUL JIKA ADMIN LOGIN */}
+                              {isAdmin && (
+                                <>
+                                  <button onClick={() => setEditingData(row)} className="inline-flex items-center gap-1 text-xs text-white bg-orange-500 hover:bg-orange-600 font-bold px-3 py-2 rounded-lg shadow-sm">
+                                    <Edit size={14}/> EDIT
+                                  </button>
+                                  <button onClick={() => handleDeleteItem(row.id, row.nama_sekolah)} className="inline-flex items-center gap-1 text-xs text-white bg-red-600 hover:bg-red-700 font-bold px-3 py-2 rounded-lg shadow-sm">
+                                    <Trash2 size={14}/> HAPUS
+                                  </button>
+                                </>
+                              )}
+                              {/* TOMBOL UNDUH - SELALU MUNCUL */}
+                              <button onClick={() => { if (row.drive_url && row.drive_url !== "#") window.open(row.drive_url, '_blank'); else alert('Data simulasi tidak ada file asli.'); }} className={`inline-flex items-center gap-1 text-xs text-white font-bold px-3 py-2 rounded-lg shadow-sm ${activeMenu === 'VERKOM' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                                <Download size={14} /> {isAdmin ? '' : 'UNDUH'}
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -535,7 +618,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V7.0 (MULTI-KEY TURBO)</span>
+                <span>SISTEM E-ARSIP KALSEL V8.0 (CRUD ADMIN & TANGKAP PAKSA)</span>
               </div>
             </div>
           )}

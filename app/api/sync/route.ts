@@ -7,9 +7,6 @@ export async function POST(req: Request) {
   try {
     const { file, kabupaten, kategori, driveApiKey } = await req.json();
 
-    // =======================================================================
-    // 🚀 MESIN TURBO: MENYEDOT BANYAK API KEY DARI ENVIRONMENT VARIABLES
-    // =======================================================================
     const GEMINI_KEYS = [
       process.env.GEMINI_API_KEY,    
       process.env.GEMINI_API_KEY_2,  
@@ -19,7 +16,7 @@ export async function POST(req: Request) {
     ].filter(key => key && key.trim() !== "");
 
     if (GEMINI_KEYS.length === 0) {
-      return NextResponse.json({ error: "Gemini API Key belum dikonfigurasi di Environment Variables Vercel." }, { status: 400 });
+      return NextResponse.json({ error: "API Key Vercel Kosong! Bapak WAJIB melakukan REDEPLOY di tab Deployments Vercel." }, { status: 400 });
     }
 
     const activeKey = GEMINI_KEYS[Math.floor(Math.random() * GEMINI_KEYS.length)];
@@ -31,7 +28,7 @@ export async function POST(req: Request) {
     const fileResponse = await fetch(downloadUrl);
     
     if (!fileResponse.ok) {
-       return NextResponse.json({ error: "Gagal mengunduh file." }, { status: 400 });
+       return NextResponse.json({ error: "Gagal mendownload foto dari Google Drive. Pastikan izin fotonya Siapa Saja Memiliki Link." }, { status: 400 });
     }
 
     const arrayBuffer = await fileResponse.arrayBuffer();
@@ -39,11 +36,8 @@ export async function POST(req: Request) {
     const mimeType = file.mimeType || 'application/pdf';
 
     // 2. PROMPT CERDAS
-    const prompt = `Anda adalah asisten arsip data yang sangat teliti.
-    Nama file asli dokumen/gambar ini adalah: "${file.name}".
-    
-    Tugas Anda: Ekstrak data dari gambar/dokumen ini. Jika teks kurang jelas, GUNAKAN INFORMASI DARI NAMA FILE di atas untuk menebak nama sekolah, bulan, dan tahunnya.
-    
+    const prompt = `Anda adalah asisten arsip data. Nama file asli gambar ini adalah: "${file.name}".
+    Ekstrak data dari gambar/dokumen ini. Jika teks kurang jelas, GUNAKAN NAMA FILE di atas untuk menebak nama sekolah, bulan, dan tahunnya.
     Keluarkan data HANYA dalam format JSON murni:
     {
       "nama_sekolah": "Nama sekolah lengkap (misal: MIN 17 HSS / SDN 1 PAKAN DALAM)",
@@ -52,7 +46,7 @@ export async function POST(req: Request) {
       "tahun": "Tahun dokumen (misal 2024). Jika tidak ada, isi tahun saat ini"
     }`;
 
-    // DATA DEFAULT (JIKA AI GAGAL MEMBACA, DATA INI YANG AKAN DISIMPAN AGAR BISA DI-EDIT ADMIN)
+    // DATA DEFAULT JIKA AI GAGAL BACA
     let extractedData = {
       nama_sekolah: "MEMBUTUHKAN EDIT MANUAL",
       kecamatan: "BELUM TERBACA",
@@ -72,11 +66,9 @@ export async function POST(req: Request) {
         extractedData = JSON.parse(jsonMatch[0]);
       }
     } catch (aiParseError) {
-      console.log("AI gagal mengekstrak sempurna, menggunakan data default untuk file: " + file.name);
-      // Tetap biarkan extractedData menggunakan nilai "MEMBUTUHKAN EDIT MANUAL"
+      console.log("AI gagal mengekstrak sempurna.");
     }
 
-    // 3. KEMBALIKAN HASIL (PASTI BERHASIL MASUK DATABASE)
     return NextResponse.json({
       success: true,
       data: {
@@ -84,7 +76,7 @@ export async function POST(req: Request) {
         kabupaten: kabupaten,
         kategori: kategori, 
         drive_id: file.id,
-        file_name_original: file.name, // Menyimpan nama file asli untuk referensi Admin
+        file_name_original: file.name,
         drive_url: `https://drive.google.com/file/d/${file.id}/view`
       }
     });

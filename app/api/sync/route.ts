@@ -9,12 +9,12 @@ export async function POST(req: Request) {
 
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    // 1. Download PDF dari Google Drive API (DITAMBAHKAN IZIN DRIVE INSTANSI)
+    // 1. Download PDF dari Google Drive API
     const downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveApiKey}&supportsAllDrives=true`;
     const fileResponse = await fetch(downloadUrl);
     
     if (!fileResponse.ok) {
-       return NextResponse.json({ error: "Gagal mengunduh file dari Drive. Pastikan akses Publik." }, { status: 400 });
+       return NextResponse.json({ error: "Gagal mengunduh file dari Drive." }, { status: 400 });
     }
 
     const arrayBuffer = await fileResponse.arrayBuffer();
@@ -40,13 +40,14 @@ export async function POST(req: Request) {
     
     const extractedData = JSON.parse(aiText);
 
-    // 3. Kembalikan Hasil ke Frontend
+    // 3. Kembalikan Hasil ke Frontend beserta ID File Asli untuk pelacakan Ganda
     return NextResponse.json({
       success: true,
       data: {
         ...extractedData,
         kabupaten: kabupaten,
         kategori: kategori, 
+        drive_id: file.id,
         drive_url: `https://drive.google.com/file/d/${file.id}/view`
       }
     });

@@ -33,22 +33,22 @@ const KABUPATEN_KOTA = [
   "TABALONG", "BALANGAN", "TANAH BUMBU", "KOTABARU"
 ];
 
-// URUTAN BULAN UNTUK SORTIR KRONOLOGIS
 const BULAN_ORDER: Record<string, number> = {
   "JANUARI": 1, "FEBRUARI": 2, "MARET": 3, "APRIL": 4, "MEI": 5, "JUNI": 6,
   "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, "NOVEMBER": 11, "DESEMBER": 12
 };
 
 // ============================================================================
-// 2. FUNGSI RADAR MENGGALI FOLDER (RECURSIVE)
+// 2. RADAR: KINI MEMBACA FOTO (JPG/PNG) & PDF
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
-  let allPdfs: any[] = [];
+  let allFiles: any[] = [];
   let pageToken = ''; 
   
   try {
     do {
-      const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
+      // PERBAIKAN: Kini mencari PDF, JPEG, dan PNG!
+      const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='image/jpeg' or mimeType='image/png' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
       const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${pageToken}` : ''}`;
       
       const res = await fetch(url);
@@ -58,16 +58,16 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
 
       for (const file of data.files || []) {
         if (file.mimeType === 'application/vnd.google-apps.folder') {
-          const subPdfs = await scanFoldersRecursively(file.id, apiKey);
-          allPdfs = allPdfs.concat(subPdfs);
-        } else if (file.mimeType === 'application/pdf') {
-          allPdfs.push(file);
+          const subFiles = await scanFoldersRecursively(file.id, apiKey);
+          allFiles = allFiles.concat(subFiles);
+        } else if (file.mimeType === 'application/pdf' || file.mimeType.startsWith('image/')) {
+          allFiles.push(file);
         }
       }
       pageToken = data.nextPageToken || ''; 
     } while (pageToken);
   } catch (error) { console.error("Scanner error:", error); }
-  return allPdfs;
+  return allFiles;
 };
 
 // ============================================================================
@@ -75,8 +75,6 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
 // ============================================================================
 export default function App() {
   const [filesData, setFilesData] = useState<any[]>([]);
-  
-  // --- UI STATE ---
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [activeMenu, setActiveMenu] = useState('DASHBOARD'); 
   const [activeDistrict, setActiveDistrict] = useState('');
@@ -87,7 +85,6 @@ export default function App() {
   const [uploadStatus, setUploadStatus] = useState('');
   const [latestUploadedCard, setLatestUploadedCard] = useState<any>(null); 
   
-  // --- STATE ADMIN & LINK ---
   const [isAdmin, setIsAdmin] = useState(false);
   const [passInput, setPassInput] = useState('');
   const [authError, setAuthError] = useState('');
@@ -98,9 +95,6 @@ export default function App() {
   const [saveLinkStatus, setSaveLinkStatus] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // ============================================================================
-  // 4. MENGAMBIL DATA FIREBASE
-  // ============================================================================
   useEffect(() => {
     const dbRef = ref(db, 'kalsel_files');
     const unsubscribeFiles = onValue(dbRef, (snapshot) => {
@@ -126,9 +120,6 @@ export default function App() {
     return () => { unsubscribeFiles(); unsubscribeVLinks(); unsubscribeALinks(); };
   }, []);
 
-  // ============================================================================
-  // 5. PENCARIAN & SORTIR CERDAS (A-Z DAN KRONOLOGIS BULAN)
-  // ============================================================================
   const filteredData = useMemo(() => {
     let result = filesData.filter(item => {
       const matchMenu = item.kategori === activeMenu;
@@ -138,20 +129,16 @@ export default function App() {
       return matchMenu && matchDistrict && matchSearch;
     });
 
-    // LOGIKA SORTIR RAPI: NAMA SEKOLAH -> TAHUN -> BULAN
     result.sort((a, b) => {
-      // 1. Sortir Nama Sekolah (A-Z)
       const namaA = (a.nama_sekolah || "").toUpperCase();
       const namaB = (b.nama_sekolah || "").toUpperCase();
       if (namaA < namaB) return -1;
       if (namaA > namaB) return 1;
 
-      // 2. Sortir Tahun
       const tahunA = parseInt(a.tahun) || 0;
       const tahunB = parseInt(b.tahun) || 0;
       if (tahunA !== tahunB) return tahunA - tahunB;
 
-      // 3. Sortir Bulan (Januari -> Desember)
       const bulanA = BULAN_ORDER[(a.bulan || "").toUpperCase()] || 99;
       const bulanB = BULAN_ORDER[(b.bulan || "").toUpperCase()] || 99;
       return bulanA - bulanB;
@@ -167,9 +154,6 @@ export default function App() {
     return { total, verkom, absen };
   }, [filesData]);
 
-  // ============================================================================
-  // 6. FUNGSI ADMIN & SINKRONISASI
-  // ============================================================================
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (passInput === "Kalsel 123") {
@@ -205,40 +189,37 @@ export default function App() {
 
       await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
-      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS...`);
-      const allFoundPdfs = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
+      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Harap tunggu 1-2 Menit)`);
+      const allFoundFiles = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
-      if(allFoundPdfs.length === 0) {
-        setSaveLinkStatus(`⚠️ TIDAK DITEMUKAN PDF. Pastikan izin akses folder Publik.`);
+      if(allFoundFiles.length === 0) {
+        setSaveLinkStatus(`⚠️ TIDAK ADA FILE DITEMUKAN. Pastikan izin folder Publik.`);
         setIsSyncing(false); setTimeout(() => setSaveLinkStatus(''), 6000); return;
       }
 
-      let newlyAddedItems: any[] = []; // Penampung sementara untuk pelacakan ganda di loop yang sama
+      let newlyAddedItems: any[] = []; 
 
-      for (let i = 0; i < allFoundPdfs.length; i++) {
-        const pdfFile = allFoundPdfs[i];
+      for (let i = 0; i < allFoundFiles.length; i++) {
+        const file = allFoundFiles[i];
         
-        // --- 1. FILTER GANDA PRE-AI (Cek dari Drive ID) ---
         const existingDriveIds = filesData.map(f => f.drive_id);
-        if (existingDriveIds.includes(pdfFile.id)) {
-          setSaveLinkStatus(`⏭️ SKIP: File "${pdfFile.name}" sudah ada di database.`);
+        if (existingDriveIds.includes(file.id)) {
+          setSaveLinkStatus(`⏭️ SKIP: File "${file.name}" sudah ada di database.`);
           await new Promise(r => setTimeout(r, 500));
           continue; 
         }
 
-        setSaveLinkStatus(`🤖 AI MEMBACA (${i+1}/${allFoundPdfs.length}): "${pdfFile.name}"...`);
+        setSaveLinkStatus(`🤖 AI MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
 
         try {
           const response = await fetch('/api/sync', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: pdfFile, kabupaten, kategori, driveApiKey: DRIVE_API_KEY })
+            body: JSON.stringify({ file: file, kabupaten, kategori, driveApiKey: DRIVE_API_KEY })
           });
 
           if (response.ok) {
             const result = await response.json();
             if (result.success) {
-              
-              // --- 2. FILTER GANDA POST-AI (Cek Kesamaan Nama Sekolah + Bulan + Tahun + Kategori) ---
               const isDuplicateData = filesData.some(f => 
                 f.nama_sekolah === result.data.nama_sekolah && 
                 f.bulan === result.data.bulan && 
@@ -258,8 +239,8 @@ export default function App() {
               }
             }
           }
-        } catch (apiErr) { console.error("Gagal file:", pdfFile.name); }
-        await new Promise(r => setTimeout(r, 2500)); // Jeda AI
+        } catch (apiErr) { console.error("Gagal file:", file.name); }
+        await new Promise(r => setTimeout(r, 2500)); 
       }
 
       setSaveLinkStatus(`✅ SINKRONISASI SELESAI UNTUK ${kabupaten}!`);
@@ -295,9 +276,6 @@ export default function App() {
 
   const toggleMenu = (menu: string) => { setExpandedMenus((prev: any) => ({ ...prev, [menu]: !prev[menu] })); };
 
-  // ============================================================================
-  // 7. TAMPILAN ANTARMUKA
-  // ============================================================================
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800 font-sans uppercase">
       
@@ -466,7 +444,7 @@ export default function App() {
           {activeMenu === 'UPLOAD' && (
              <div className="max-w-2xl mx-auto space-y-6">
                <div className="bg-white p-8 rounded-xl text-center border border-gray-100 shadow-sm">
-                 <h3 className="text-2xl font-black text-gray-800 mb-2">UPLOAD DOKUMEN PDF</h3>
+                 <h3 className="text-2xl font-black text-gray-800 mb-2">UPLOAD DOKUMEN PDF / FOTO</h3>
                  <div className="border-2 border-dashed border-emerald-400 rounded-xl p-12 bg-emerald-50 mb-6 mt-6">
                    <UploadCloud className="mx-auto text-emerald-500 mb-4" size={56} />
                    <button onClick={handleSimulateUpload} disabled={isUploading} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-lg font-bold text-lg disabled:opacity-50">

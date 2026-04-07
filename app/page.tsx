@@ -39,7 +39,7 @@ const BULAN_ORDER: Record<string, number> = {
 };
 
 // ============================================================================
-// 2. RADAR: KINI MEMBACA FOTO (JPG/PNG) & PDF
+// 2. RADAR: KINI MEMBACA FOTO (JPG/PNG) & PDF DARI AKAR TERDALAM
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allFiles: any[] = [];
@@ -47,7 +47,6 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
   
   try {
     do {
-      // PERBAIKAN: Kini mencari PDF, JPEG, dan PNG!
       const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='image/jpeg' or mimeType='image/png' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
       const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${pageToken}` : ''}`;
       
@@ -60,7 +59,7 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
         if (file.mimeType === 'application/vnd.google-apps.folder') {
           const subFiles = await scanFoldersRecursively(file.id, apiKey);
           allFiles = allFiles.concat(subFiles);
-        } else if (file.mimeType === 'application/pdf' || file.mimeType.startsWith('image/')) {
+        } else {
           allFiles.push(file);
         }
       }
@@ -189,7 +188,7 @@ export default function App() {
 
       await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
-      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Harap tunggu 1-2 Menit)`);
+      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Mencari PDF & Gambar)`);
       const allFoundFiles = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
       if(allFoundFiles.length === 0) {
@@ -202,9 +201,10 @@ export default function App() {
       for (let i = 0; i < allFoundFiles.length; i++) {
         const file = allFoundFiles[i];
         
+        // 1. CEK GANDA BERDASARKAN FILE ASLI (DRIVE ID)
         const existingDriveIds = filesData.map(f => f.drive_id);
         if (existingDriveIds.includes(file.id)) {
-          setSaveLinkStatus(`⏭️ SKIP: File "${file.name}" sudah ada di database.`);
+          setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File "${file.name}" sudah ada.`);
           await new Promise(r => setTimeout(r, 500));
           continue; 
         }
@@ -217,29 +217,42 @@ export default function App() {
             body: JSON.stringify({ file: file, kabupaten, kategori, driveApiKey: DRIVE_API_KEY })
           });
 
-          if (response.ok) {
-            const result = await response.json();
-            if (result.success) {
-              const isDuplicateData = filesData.some(f => 
-                f.nama_sekolah === result.data.nama_sekolah && 
-                f.bulan === result.data.bulan && 
-                f.tahun === result.data.tahun && 
-                f.kategori === kategori
-              ) || newlyAddedItems.some(f => 
-                f.nama_sekolah === result.data.nama_sekolah && f.bulan === result.data.bulan && f.kategori === kategori
-              );
+          // ANTI "SILENT FAILURE" (Kegagalan Bisu)
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({error: "Server Timeout"}));
+            setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}": ${errData.error || 'Terlalu Besar/Timeout'}`);
+            await new Promise(r => setTimeout(r, 3000));
+            continue; // Lanjut ke file berikutnya
+          }
 
-              if (isDuplicateData) {
-                setSaveLinkStatus(`🚫 DITOLAK: Data ${result.data.nama_sekolah} (${result.data.bulan}) sudah ada!`);
-              } else {
-                setSaveLinkStatus(`💾 PEREKAMAN: Menyimpan ${result.data.nama_sekolah}...`);
-                await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
-                newlyAddedItems.push(result.data);
-                setLatestUploadedCard(result.data);
-              }
+          const result = await response.json();
+          if (result.success) {
+            
+            // 2. CEK GANDA BERDASARKAN KONTEN (NAMA & BULAN)
+            const isDuplicateData = filesData.some(f => 
+              f.nama_sekolah === result.data.nama_sekolah && 
+              f.bulan === result.data.bulan && 
+              f.tahun === result.data.tahun && 
+              f.kategori === kategori &&
+              f.nama_sekolah !== "BELUM TERBACA" // Izinkan masuk jika statusnya belum terbaca agar bisa diunduh manual
+            ) || newlyAddedItems.some(f => 
+              f.nama_sekolah === result.data.nama_sekolah && f.bulan === result.data.bulan && f.kategori === kategori && f.nama_sekolah !== "BELUM TERBACA"
+            );
+
+            if (isDuplicateData) {
+              setSaveLinkStatus(`🚫 DITOLAK: Data ${result.data.nama_sekolah} (${result.data.bulan}) sudah ada!`);
+            } else {
+              setSaveLinkStatus(`💾 PEREKAMAN: Menyimpan ${result.data.nama_sekolah}...`);
+              await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
+              newlyAddedItems.push(result.data);
+              setLatestUploadedCard(result.data);
             }
           }
-        } catch (apiErr) { console.error("Gagal file:", file.name); }
+        } catch (apiErr) { 
+          setSaveLinkStatus(`⚠️ ERROR KONEKSI PADA FILE: ${file.name}`);
+        }
+        
+        // Jeda AI agar tidak diblokir Google
         await new Promise(r => setTimeout(r, 2500)); 
       }
 
@@ -391,8 +404,8 @@ export default function App() {
                   </div>
 
                   {saveLinkStatus && (
-                    <div className={`mb-6 p-4 font-bold flex items-center gap-3 rounded-lg border shadow-sm ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('KESALAHAN') ? 'bg-red-100 text-red-800 border-red-200' : saveLinkStatus.includes('DITOLAK') || saveLinkStatus.includes('SKIP') ? 'bg-orange-100 text-orange-800 border-orange-200' : saveLinkStatus.includes('SELESAI') ? 'bg-green-100 text-green-800 border-green-200' : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'}`}>
-                      {isSyncing && saveLinkStatus.includes('MEREKAM') ? <Database className="animate-bounce" size={20} /> : isSyncing && saveLinkStatus.includes('DITOLAK') ? <AlertTriangle size={20}/> : (isSyncing && <Loader2 className="animate-spin" size={20} />)}
+                    <div className={`mb-6 p-4 font-bold flex items-center gap-3 rounded-lg border shadow-sm ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('ERROR') ? 'bg-red-100 text-red-800 border-red-200' : saveLinkStatus.includes('DITOLAK') || saveLinkStatus.includes('SKIP') ? 'bg-orange-100 text-orange-800 border-orange-200' : saveLinkStatus.includes('SELESAI') ? 'bg-green-100 text-green-800 border-green-200' : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'}`}>
+                      {isSyncing && saveLinkStatus.includes('PEREKAMAN') ? <Database className="animate-bounce" size={20} /> : isSyncing && (saveLinkStatus.includes('DITOLAK') || saveLinkStatus.includes('SKIP')) ? <AlertTriangle size={20}/> : (isSyncing && <Loader2 className="animate-spin" size={20} />)}
                       {saveLinkStatus}
                     </div>
                   )}
@@ -444,7 +457,7 @@ export default function App() {
           {activeMenu === 'UPLOAD' && (
              <div className="max-w-2xl mx-auto space-y-6">
                <div className="bg-white p-8 rounded-xl text-center border border-gray-100 shadow-sm">
-                 <h3 className="text-2xl font-black text-gray-800 mb-2">UPLOAD DOKUMEN PDF / FOTO</h3>
+                 <h3 className="text-2xl font-black text-gray-800 mb-2">UPLOAD DOKUMEN (PDF/JPG)</h3>
                  <div className="border-2 border-dashed border-emerald-400 rounded-xl p-12 bg-emerald-50 mb-6 mt-6">
                    <UploadCloud className="mx-auto text-emerald-500 mb-4" size={56} />
                    <button onClick={handleSimulateUpload} disabled={isUploading} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-lg font-bold text-lg disabled:opacity-50">
@@ -507,7 +520,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V3.0 (SORTED)</span>
+                <span>SISTEM E-ARSIP KALSEL V4.0 (AI IMAGE SCANNER)</span>
               </div>
             </div>
           )}

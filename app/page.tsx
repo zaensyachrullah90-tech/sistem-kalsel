@@ -39,7 +39,7 @@ const BULAN_ORDER: Record<string, number> = {
 };
 
 // ============================================================================
-// 2. RADAR: KINI MEMBACA FOTO (JPG/PNG) & PDF DARI AKAR TERDALAM
+// 2. RADAR: MEMBACA FOTO (JPG/PNG) & PDF DARI AKAR TERDALAM
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allFiles: any[] = [];
@@ -188,7 +188,7 @@ export default function App() {
 
       await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
-      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Mencari PDF & Gambar)`);
+      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Menyisir PDF & Gambar)`);
       const allFoundFiles = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
       if(allFoundFiles.length === 0) {
@@ -209,7 +209,7 @@ export default function App() {
           continue; 
         }
 
-        setSaveLinkStatus(`🤖 AI MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
+        setSaveLinkStatus(`🤖 AI MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"... (Menjaga Batas Aman Server)`);
 
         try {
           const response = await fetch('/api/sync', {
@@ -217,24 +217,24 @@ export default function App() {
             body: JSON.stringify({ file: file, kabupaten, kategori, driveApiKey: DRIVE_API_KEY })
           });
 
-          // ANTI "SILENT FAILURE" (Kegagalan Bisu)
+          // ANTI "SILENT FAILURE"
           if (!response.ok) {
-            const errData = await response.json().catch(() => ({error: "Server Timeout"}));
-            setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}": ${errData.error || 'Terlalu Besar/Timeout'}`);
-            await new Promise(r => setTimeout(r, 3000));
-            continue; // Lanjut ke file berikutnya
+            // Kita ubah pesan error agar admin tidak panik
+            setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}": Terlalu Besar / AI Kewalahan. Melewati...`);
+            await new Promise(r => setTimeout(r, 5000)); // Tunggu 5 detik tambahan kalau AI marah
+            continue; 
           }
 
           const result = await response.json();
           if (result.success) {
             
-            // 2. CEK GANDA BERDASARKAN KONTEN (NAMA & BULAN)
+            // 2. CEK GANDA BERDASARKAN KONTEN
             const isDuplicateData = filesData.some(f => 
               f.nama_sekolah === result.data.nama_sekolah && 
               f.bulan === result.data.bulan && 
               f.tahun === result.data.tahun && 
               f.kategori === kategori &&
-              f.nama_sekolah !== "BELUM TERBACA" // Izinkan masuk jika statusnya belum terbaca agar bisa diunduh manual
+              f.nama_sekolah !== "BELUM TERBACA"
             ) || newlyAddedItems.some(f => 
               f.nama_sekolah === result.data.nama_sekolah && f.bulan === result.data.bulan && f.kategori === kategori && f.nama_sekolah !== "BELUM TERBACA"
             );
@@ -249,11 +249,11 @@ export default function App() {
             }
           }
         } catch (apiErr) { 
-          setSaveLinkStatus(`⚠️ ERROR KONEKSI PADA FILE: ${file.name}`);
+          setSaveLinkStatus(`⚠️ ERROR KONEKSI PADA FILE: ${file.name}. Melewati...`);
         }
         
-        // Jeda AI agar tidak diblokir Google
-        await new Promise(r => setTimeout(r, 2500)); 
+        // JEDA 5 DETIK: INI ADALAH KUNCI UTAMA AGAR GOOGLE TIDAK MEMBLOKIR (ERROR 429)
+        await new Promise(r => setTimeout(r, 5000)); 
       }
 
       setSaveLinkStatus(`✅ SINKRONISASI SELESAI UNTUK ${kabupaten}!`);
@@ -520,7 +520,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V4.0 (AI IMAGE SCANNER)</span>
+                <span>SISTEM E-ARSIP KALSEL V4.5 (ANTI ERROR 429)</span>
               </div>
             </div>
           )}

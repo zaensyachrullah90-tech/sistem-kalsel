@@ -1,16 +1,33 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Cegah sistem menggunakan cache lama
 export const dynamic = 'force-dynamic';
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 export async function POST(req: Request) {
   try {
     const { file, kabupaten, kategori, driveApiKey } = await req.json();
 
+    // =======================================================================
+    // 🚀 MESIN TURBO: MENYEDOT BANYAK API KEY DARI ENVIRONMENT VARIABLES
+    // =======================================================================
+    const GEMINI_KEYS = [
+      process.env.GEMINI_API_KEY,    // Key Utama
+      process.env.GEMINI_API_KEY_2,  // Key Cadangan 1
+      process.env.GEMINI_API_KEY_3,  // Key Cadangan 2
+      process.env.GEMINI_API_KEY_4,  // Key Cadangan 3
+      process.env.GEMINI_API_KEY_5   // Key Cadangan 4
+    ].filter(key => key && key.trim() !== ""); // Filter otomatis: Hanya gunakan yang ada isinya!
+
+    // Jika tidak ada satupun key yang terisi di Vercel, tolak prosesnya
+    if (GEMINI_KEYS.length === 0) {
+      return NextResponse.json({ error: "Gemini API Key belum dikonfigurasi di Environment Variables Vercel." }, { status: 400 });
+    }
+
+    // Pilih satu API Key secara ACAK setiap kali memproses 1 file (Anti-Limit 429)
+    const activeKey = GEMINI_KEYS[Math.floor(Math.random() * GEMINI_KEYS.length)];
+    const genAI = new GoogleGenerativeAI(activeKey as string);
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    // =======================================================================
 
     // 1. Download File (PDF / JPG / PNG)
     const downloadUrl = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&key=${driveApiKey}&supportsAllDrives=true`;
@@ -24,7 +41,7 @@ export async function POST(req: Request) {
     const base64Data = Buffer.from(arrayBuffer).toString('base64');
     const mimeType = file.mimeType || 'application/pdf';
 
-    // 2. PROMPT CERDAS (Memberikan nama file sebagai contekan)
+    // 2. PROMPT CERDAS
     const prompt = `Anda adalah asisten arsip data yang sangat teliti.
     Nama file asli dokumen/gambar ini adalah: "${file.name}".
     
@@ -46,7 +63,6 @@ export async function POST(req: Request) {
 
     let aiText = aiResult.response.text();
     
-    // Mengekstrak JSON secara paksa agar aman
     const jsonMatch = aiText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       return NextResponse.json({ error: "AI gagal mengekstrak data JSON." }, { status: 400 });
@@ -66,7 +82,6 @@ export async function POST(req: Request) {
     });
 
   } catch (error: any) {
-    // Menangkap Error 429 dari Google atau Timeout
     const errorMessage = error.message || "Gagal memproses AI.";
     return NextResponse.json({ error: errorMessage }, { status: errorMessage.includes('429') || errorMessage.includes('QUOTA') ? 429 : 500 });
   }

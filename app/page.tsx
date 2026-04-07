@@ -39,7 +39,7 @@ const BULAN_ORDER: Record<string, number> = {
 };
 
 // ============================================================================
-// 2. RADAR: MEMBACA FOTO (JPG/PNG) & PDF DARI AKAR TERDALAM
+// 2. RADAR: MENCARI PDF, JPG, JPEG, PNG
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allFiles: any[] = [];
@@ -48,7 +48,7 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
   try {
     do {
       const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='image/jpeg' or mimeType='image/png' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
-      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${pageToken}` : ''}`;
+      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? \`&pageToken=\${pageToken}\` : ''}`;
       
       const res = await fetch(url);
       const data = await res.json();
@@ -128,6 +128,7 @@ export default function App() {
       return matchMenu && matchDistrict && matchSearch;
     });
 
+    // URUTKAN: NAMA SEKOLAH -> TAHUN -> BULAN
     result.sort((a, b) => {
       const namaA = (a.nama_sekolah || "").toUpperCase();
       const namaB = (b.nama_sekolah || "").toUpperCase();
@@ -174,6 +175,9 @@ export default function App() {
     }
   };
 
+  // ============================================================================
+  // LOGIKA SINKRONISASI AI (ANTI ERROR 429 & PELAN TAPI PASTI)
+  // ============================================================================
   const handleSaveLink = async (kabupaten: string, kategori: 'VERKOM' | 'ABSEN') => {
     const currentLink = kategori === 'VERKOM' ? verkomLinks[kabupaten] : absenLinks[kabupaten];
     if(!currentLink || isSyncing) return;
@@ -188,7 +192,7 @@ export default function App() {
 
       await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
-      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Menyisir PDF & Gambar)`);
+      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Mencari PDF & Gambar)`);
       const allFoundFiles = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
       if(allFoundFiles.length === 0) {
@@ -201,59 +205,78 @@ export default function App() {
       for (let i = 0; i < allFoundFiles.length; i++) {
         const file = allFoundFiles[i];
         
-        // 1. CEK GANDA BERDASARKAN FILE ASLI (DRIVE ID)
+        // 1. CEK GANDA ID DRIVE
         const existingDriveIds = filesData.map(f => f.drive_id);
         if (existingDriveIds.includes(file.id)) {
-          setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File "${file.name}" sudah ada.`);
-          await new Promise(r => setTimeout(r, 500));
+          setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File sudah ada.`);
+          await new Promise(r => setTimeout(r, 300));
           continue; 
         }
 
-        setSaveLinkStatus(`🤖 AI MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"... (Menjaga Batas Aman Server)`);
+        let isSuccess = false;
+        let retryCount = 0;
 
-        try {
-          const response = await fetch('/api/sync', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: file, kabupaten, kategori, driveApiKey: DRIVE_API_KEY })
-          });
+        // 2. LOOPING RETRY JIKA GOOGLE MARAH (MAX 3 KALI COBA)
+        while (!isSuccess && retryCount < 3) {
+          try {
+            setSaveLinkStatus(`🤖 AI MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
 
-          // ANTI "SILENT FAILURE"
-          if (!response.ok) {
-            // Kita ubah pesan error agar admin tidak panik
-            setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}": Terlalu Besar / AI Kewalahan. Melewati...`);
-            await new Promise(r => setTimeout(r, 5000)); // Tunggu 5 detik tambahan kalau AI marah
-            continue; 
-          }
+            const response = await fetch('/api/sync', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ file: file, kabupaten, kategori, driveApiKey: DRIVE_API_KEY })
+            });
 
-          const result = await response.json();
-          if (result.success) {
-            
-            // 2. CEK GANDA BERDASARKAN KONTEN
-            const isDuplicateData = filesData.some(f => 
-              f.nama_sekolah === result.data.nama_sekolah && 
-              f.bulan === result.data.bulan && 
-              f.tahun === result.data.tahun && 
-              f.kategori === kategori &&
-              f.nama_sekolah !== "BELUM TERBACA"
-            ) || newlyAddedItems.some(f => 
-              f.nama_sekolah === result.data.nama_sekolah && f.bulan === result.data.bulan && f.kategori === kategori && f.nama_sekolah !== "BELUM TERBACA"
-            );
-
-            if (isDuplicateData) {
-              setSaveLinkStatus(`🚫 DITOLAK: Data ${result.data.nama_sekolah} (${result.data.bulan}) sudah ada!`);
-            } else {
-              setSaveLinkStatus(`💾 PEREKAMAN: Menyimpan ${result.data.nama_sekolah}...`);
-              await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
-              newlyAddedItems.push(result.data);
-              setLatestUploadedCard(result.data);
+            if (!response.ok) {
+              const errData = await response.json().catch(()=>({error:""}));
+              const errMsg = errData.error || "";
+              
+              // JIKA KENA ERROR 429 QUOTA EXCEEDED
+              if (errMsg.includes("429") || errMsg.includes("QUOTA") || response.status === 429) {
+                 setSaveLinkStatus(`⏳ GOOGLE AI LIMIT. Istirahat 60 DETIK agar tidak diblokir...`);
+                 await new Promise(r => setTimeout(r, 60000)); // ISTIRAHAT 1 MENIT
+                 retryCount++;
+                 continue; // Coba file yang sama lagi
+              } else {
+                 setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}". File rusak/terlalu besar.`);
+                 break; // Keluar dari loop retry, lanjut ke file berikutnya
+              }
             }
+
+            const result = await response.json();
+            if (result.success) {
+              // 3. CEK GANDA NAMA SEKOLAH & BULAN
+              const isDuplicateData = filesData.some(f => 
+                f.nama_sekolah === result.data.nama_sekolah && 
+                f.bulan === result.data.bulan && 
+                f.tahun === result.data.tahun && 
+                f.kategori === kategori &&
+                f.nama_sekolah !== "BELUM TERBACA" 
+              ) || newlyAddedItems.some(f => 
+                f.nama_sekolah === result.data.nama_sekolah && f.bulan === result.data.bulan && f.kategori === kategori && f.nama_sekolah !== "BELUM TERBACA"
+              );
+
+              if (isDuplicateData) {
+                setSaveLinkStatus(`🚫 DITOLAK: Data ${result.data.nama_sekolah} (${result.data.bulan}) sudah ada!`);
+              } else {
+                setSaveLinkStatus(`💾 PEREKAMAN: Menyimpan ${result.data.nama_sekolah}...`);
+                await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
+                newlyAddedItems.push(result.data);
+                setLatestUploadedCard(result.data);
+              }
+              isSuccess = true;
+            }
+          } catch (apiErr) { 
+            setSaveLinkStatus(`⚠️ KONEKSI PUTUS. Menunggu 10 detik...`);
+            await new Promise(r => setTimeout(r, 10000));
+            retryCount++;
           }
-        } catch (apiErr) { 
-          setSaveLinkStatus(`⚠️ ERROR KONEKSI PADA FILE: ${file.name}. Melewati...`);
         }
         
-        // JEDA 5 DETIK: INI ADALAH KUNCI UTAMA AGAR GOOGLE TIDAK MEMBLOKIR (ERROR 429)
-        await new Promise(r => setTimeout(r, 5000)); 
+        // JEDA 6 DETIK SETIAP SELESAI 1 FILE AGAR AMAN DARI BLOKIR GOOGLE (Max 10 File per menit)
+        if (isSuccess) {
+          setSaveLinkStatus(`⏳ Jeda 6 detik... (Keamanan Server)`);
+          await new Promise(r => setTimeout(r, 6000)); 
+        }
       }
 
       setSaveLinkStatus(`✅ SINKRONISASI SELESAI UNTUK ${kabupaten}!`);
@@ -520,7 +543,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V4.5 (ANTI ERROR 429)</span>
+                <span>SISTEM E-ARSIP KALSEL V5.0 (ANTI BLOKIR & PINTAR)</span>
               </div>
             </div>
           )}

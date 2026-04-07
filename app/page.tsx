@@ -4,21 +4,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp, getApps } from 'firebase/app';
 import { getDatabase, ref, onValue, push, set, serverTimestamp } from 'firebase/database';
 import { 
-  FolderOpen, 
-  FileText, 
-  UploadCloud, 
-  Search, 
-  Download, 
-  BarChart2, 
-  Menu, 
-  X, 
-  ChevronDown, 
-  ChevronRight, 
-  FileCheck, 
-  Settings, 
-  Link as LinkIcon, 
-  CheckCircle, 
-  Loader2 
+  FolderOpen, FileText, UploadCloud, Search, Download, 
+  BarChart2, Menu, X, ChevronDown, ChevronRight, FileCheck, 
+  Settings, Link as LinkIcon, CheckCircle, Loader2, Lock, ShieldCheck
 } from 'lucide-react';
 
 // ============================================================================
@@ -46,22 +34,26 @@ const KABUPATEN_KOTA = [
 ];
 
 // ============================================================================
-// 2. FUNGSI RADAR: MENCARI FILE PDF DI DALAM FOLDER YANG BERLAPIS-LAPIS
+// 2. FUNGSI RADAR SCANNER (MENEMBUS FOLDER BERLAPIS)
 // ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allPdfs: any[] = [];
   try {
-    const url = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+trashed=false&key=${apiKey}&fields=files(id,name,mimeType)`;
+    const url = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+trashed=false&key=${apiKey}&fields=files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+    
     const res = await fetch(url);
     const data = await res.json();
 
+    if (data.error) {
+      console.error("API Error dari Google:", data.error.message);
+      return allPdfs;
+    }
+
     for (const file of data.files || []) {
       if (file.mimeType === 'application/vnd.google-apps.folder') {
-        // Jika menemukan Folder lagi, selami folder tersebut! (Rekursif)
         const subPdfs = await scanFoldersRecursively(file.id, apiKey);
         allPdfs = allPdfs.concat(subPdfs);
       } else if (file.mimeType === 'application/pdf') {
-        // Jika menemukan PDF, kumpulkan!
         allPdfs.push(file);
       }
     }
@@ -75,23 +67,26 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
 // 3. KOMPONEN UTAMA APLIKASI
 // ============================================================================
 export default function App() {
-  // --- DATABASE STATE ---
   const [filesData, setFilesData] = useState<any[]>([]);
   
-  // --- UI NAVIGATION STATE ---
+  // --- UI STATE LAMA (DIPERTAHANKAN) ---
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [activeMenu, setActiveMenu] = useState('DASHBOARD'); 
   const [activeDistrict, setActiveDistrict] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedMenus, setExpandedMenus] = useState<any>({ VERKOM: false, ABSEN: false });
 
-  // --- UPLOAD STATE ---
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [latestUploadedCard, setLatestUploadedCard] = useState<any>(null); 
   
-  // --- SETTINGS (LINK DRIVE) STATE ---
-  const [folderLinks, setFolderLinks] = useState<any>({});
+  // --- STATE BARU: ADMIN & PEMISAHAN LINK ---
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [passInput, setPassInput] = useState('');
+  const [authError, setAuthError] = useState('');
+  
+  const [verkomLinks, setVerkomLinks] = useState<any>({});
+  const [absenLinks, setAbsenLinks] = useState<any>({});
   const [saveLinkStatus, setSaveLinkStatus] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -99,35 +94,35 @@ export default function App() {
   // 4. MENGAMBIL DATA FIREBASE
   // ============================================================================
   useEffect(() => {
+    // Ambil Data File
     const dbRef = ref(db, 'kalsel_files');
     const unsubscribeFiles = onValue(dbRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
-        const dataArray = Object.keys(data).map(key => ({ 
-          id: key, 
-          ...data[key] 
-        }));
+        const dataArray = Object.keys(data).map(key => ({ id: key, ...data[key] }));
         setFilesData(dataArray);
       } else {
         setFilesData([]);
       }
     });
 
-    const linkRef = ref(db, 'kalsel_links');
-    const unsubscribeLinks = onValue(linkRef, (snapshot) => {
-      if(snapshot.val()) {
-        setFolderLinks(snapshot.val());
-      }
+    // Ambil Data Link Verkom
+    const vLinkRef = ref(db, 'kalsel_links/VERKOM');
+    const unsubscribeVLinks = onValue(vLinkRef, (snapshot) => {
+      if(snapshot.val()) setVerkomLinks(snapshot.val());
     });
 
-    return () => { 
-      unsubscribeFiles(); 
-      unsubscribeLinks(); 
-    };
+    // Ambil Data Link Absen
+    const aLinkRef = ref(db, 'kalsel_links/ABSEN');
+    const unsubscribeALinks = onValue(aLinkRef, (snapshot) => {
+      if(snapshot.val()) setAbsenLinks(snapshot.val());
+    });
+
+    return () => { unsubscribeFiles(); unsubscribeVLinks(); unsubscribeALinks(); };
   }, []);
 
   // ============================================================================
-  // 5. PENCARIAN CEPAT (IN-MEMORY)
+  // 5. PENCARIAN CEPAT
   // ============================================================================
   const filteredData = useMemo(() => {
     return filesData.filter(item => {
@@ -147,35 +142,46 @@ export default function App() {
   }, [filesData]);
 
   // ============================================================================
-  // 6. LOGIKA UTAMA: PENARIKAN DATA BERLAPIS (ORCHESTRATOR)
+  // 6. FUNGSI TOMBOL
   // ============================================================================
-  const handleSaveLink = async (kabupaten: string) => {
-    if(!folderLinks[kabupaten] || isSyncing) return;
+  
+  // A. FUNGSI LOGIN ADMIN
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (passInput === "Kalsel 123") {
+      setIsAdmin(true);
+      setAuthError('');
+    } else {
+      setAuthError('PASSWORD SALAH! HANYA ADMIN YANG DIIZINKAN.');
+    }
+  };
+
+  // B. FUNGSI SYNC BERLAPIS (DENGAN KATEGORI)
+  const handleSaveLink = async (kabupaten: string, kategori: 'VERKOM' | 'ABSEN') => {
+    const currentLink = kategori === 'VERKOM' ? verkomLinks[kabupaten] : absenLinks[kabupaten];
     
+    if(!currentLink || isSyncing) return;
     setIsSyncing(true);
     setLatestUploadedCard(null); 
     
     try {
-      // 1. Ekstrak ID Folder dari URL
-      const folderIdMatch = folderLinks[kabupaten].match(/folders\/([a-zA-Z0-9-_]+)/);
+      const folderIdMatch = currentLink.match(/folders\/([a-zA-Z0-9-_]+)/);
       if (!folderIdMatch) throw new Error("Link Drive tidak valid.");
       const rootFolderId = folderIdMatch[1];
 
-      // Simpan link ke database
-      await set(ref(db, `kalsel_links/${kabupaten}`), folderLinks[kabupaten]);
+      // Simpan Link sesuai kategori
+      await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
-      // 2. RADAR MENYELAM: Cari semua PDF di folder dan sub-folder
       setSaveLinkStatus(`🔍 MENYELAMI FOLDER ${kabupaten} BERLAPIS... (MENCARI PDF)`);
       const allFoundPdfs = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
       if(allFoundPdfs.length === 0) {
-        setSaveLinkStatus(`⚠️ TIDAK DITEMUKAN PDF DI FOLDER ATAU SUB-FOLDER ${kabupaten}.`);
+        setSaveLinkStatus(`⚠️ TIDAK DITEMUKAN PDF. Pastikan akses folder "Siapa saja memiliki link".`);
         setIsSyncing(false);
-        setTimeout(() => setSaveLinkStatus(''), 5000);
+        setTimeout(() => setSaveLinkStatus(''), 6000);
         return;
       }
 
-      // 3. PROSES SATU PER SATU (Anti Timeout Vercel)
       let processedCount = 0;
       for (const pdfFile of allFoundPdfs) {
         processedCount++;
@@ -187,6 +193,7 @@ export default function App() {
           body: JSON.stringify({ 
             file: pdfFile, 
             kabupaten: kabupaten, 
+            kategori: kategori, // Kirim kategori ke API
             driveApiKey: DRIVE_API_KEY 
           })
         });
@@ -194,34 +201,26 @@ export default function App() {
         if (response.ok) {
           const result = await response.json();
           if (result.success) {
-            // Masukkan ke Database
-            await push(ref(db, 'kalsel_files'), { 
-              ...result.data, 
-              uploadedAt: serverTimestamp() 
-            });
-            // Update Card di Tampilan Langsung
+            await push(ref(db, 'kalsel_files'), { ...result.data, uploadedAt: serverTimestamp() });
             setLatestUploadedCard(result.data);
           }
         }
       }
 
-      setSaveLinkStatus(`✅ SELESAI! ${allFoundPdfs.length} FILE DARI ${kabupaten} TERSIMPAN DI DATABASE.`);
+      setSaveLinkStatus(`✅ SELESAI! ${allFoundPdfs.length} FILE DARI ${kabupaten} TERSIMPAN SEBAGAI ${kategori}.`);
     } catch(err: any) {
-      setSaveLinkStatus(`❌ GAGAL: ${err.message || 'KESALAHAN JARINGAN SAAT SINKRONISASI.'}`);
+      setSaveLinkStatus(`❌ GAGAL: ${err.message || 'KESALAHAN JARINGAN.'}`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setSaveLinkStatus(''), 8000);
     }
   };
 
-  // ============================================================================
-  // 7. FUNGSI SIMULASI UPLOAD
-  // ============================================================================
+  // C. FUNGSI UPLOAD MANUAL (SIMULASI - DIPERTAHANKAN)
   const handleSimulateUpload = async () => {
     setIsUploading(true);
     setUploadStatus('MENGUPLOAD FILE...');
     setLatestUploadedCard(null); 
-    
     await new Promise(r => setTimeout(r, 1000));
     setUploadStatus('MEMBACA DENGAN AI...');
     await new Promise(r => setTimeout(r, 1500)); 
@@ -230,12 +229,10 @@ export default function App() {
     const extractedData = {
       nama_sekolah: `SDN CONTOH AI ${Math.floor(Math.random() * 99)}`,
       kecamatan: `KECAMATAN UJI COBA`,
-      bulan: "MARET", 
-      tahun: "2026",
+      bulan: "MARET", tahun: "2026",
       kabupaten: randomKab,
       kategori: Math.random() > 0.5 ? 'VERKOM' : 'ABSEN',
-      drive_url: "#", 
-      uploadedAt: serverTimestamp()
+      drive_url: "#", uploadedAt: serverTimestamp()
     };
 
     try {
@@ -245,22 +242,14 @@ export default function App() {
     } catch (err) {
       setUploadStatus('GAGAL MENYIMPAN KE DATABASE.');
     } finally {
-      setTimeout(() => { 
-        setIsUploading(false); 
-        setUploadStatus(''); 
-      }, 2000);
+      setTimeout(() => { setIsUploading(false); setUploadStatus(''); }, 2000);
     }
   };
 
-  const toggleMenu = (menu: string) => { 
-    setExpandedMenus((prev: any) => ({ 
-      ...prev, 
-      [menu]: !prev[menu] 
-    })); 
-  };
+  const toggleMenu = (menu: string) => { setExpandedMenus((prev: any) => ({ ...prev, [menu]: !prev[menu] })); };
 
   // ============================================================================
-  // TAMPILAN ANTARMUKA (UI)
+  // 7. TAMPILAN ANTARMUKA (FULL DESAIN LAMA + FITUR BARU)
   // ============================================================================
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800 font-sans uppercase">
@@ -269,45 +258,27 @@ export default function App() {
       <aside className={`${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'} transition-all duration-300 bg-emerald-900 text-white flex flex-col fixed md:relative z-20 h-full overflow-y-auto shadow-xl`}>
         <div className="p-4 flex items-center justify-between bg-emerald-950">
           <h1 className="font-bold text-lg tracking-wider flex items-center gap-2">
-            <FolderOpen size={20} /> E-ARSIP KALSEL
+            <FolderOpen size={20} className="text-orange-400" /> E-ARSIP KALSEL
           </h1>
-          <button className="md:hidden text-gray-300" onClick={() => setSidebarOpen(false)}>
-            <X size={20} />
-          </button>
+          <button className="md:hidden text-gray-300" onClick={() => setSidebarOpen(false)}><X size={20} /></button>
         </div>
 
         <nav className="flex-1 p-4 space-y-2 text-sm font-semibold tracking-wide">
-          <button 
-            onClick={() => { setActiveMenu('DASHBOARD'); setActiveDistrict(''); }} 
-            className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors ${activeMenu === 'DASHBOARD' ? 'bg-emerald-700' : 'hover:bg-emerald-800'}`}
-          >
+          <button onClick={() => { setActiveMenu('DASHBOARD'); setActiveDistrict(''); setLatestUploadedCard(null); }} className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors ${activeMenu === 'DASHBOARD' ? 'bg-emerald-700' : 'hover:bg-emerald-800'}`}>
             <BarChart2 size={18} /> RINGKASAN
           </button>
 
           {['VERKOM', 'ABSEN'].map(menu => (
             <div key={menu}>
-              <button 
-                onClick={() => toggleMenu(menu)} 
-                className={`w-full flex items-center justify-between p-3 rounded-lg hover:bg-emerald-800 transition-colors ${(activeMenu === menu && !activeDistrict) ? 'bg-emerald-700' : ''}`}
-              >
-                <div className="flex items-center gap-3">
-                  {menu === 'VERKOM' ? <FileCheck size={18} /> : <FileText size={18}/>} DATA {menu}
-                </div>
+              <button onClick={() => toggleMenu(menu)} className={`w-full flex items-center justify-between p-3 rounded-lg hover:bg-emerald-800 transition-colors ${(activeMenu === menu && !activeDistrict) ? 'bg-emerald-700' : ''}`}>
+                <div className="flex items-center gap-3">{menu === 'VERKOM' ? <FileCheck size={18} /> : <FileText size={18}/>} DATA {menu}</div>
                 {expandedMenus[menu] ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
               </button>
               
               {expandedMenus[menu] && (
                 <div className="ml-8 mt-1 space-y-1">
                   {KABUPATEN_KOTA.map(kab => (
-                    <button 
-                      key={`${menu}-${kab}`} 
-                      onClick={() => {
-                        setActiveMenu(menu); 
-                        setActiveDistrict(kab); 
-                        setSearchQuery('');
-                      }} 
-                      className={`w-full text-left p-2 rounded text-xs transition-colors ${activeMenu === menu && activeDistrict === kab ? 'bg-emerald-600 font-bold' : 'text-emerald-200 hover:bg-emerald-800'}`}
-                    >
+                    <button key={`${menu}-${kab}`} onClick={() => {setActiveMenu(menu); setActiveDistrict(kab); setSearchQuery(''); setLatestUploadedCard(null);}} className={`w-full text-left p-2 rounded text-xs transition-colors ${activeMenu === menu && activeDistrict === kab ? 'bg-orange-500 font-bold text-white' : 'text-emerald-200 hover:bg-emerald-800'}`}>
                       {kab}
                     </button>
                   ))}
@@ -318,25 +289,11 @@ export default function App() {
 
           <hr className="border-emerald-700 my-4" />
 
-          <button 
-            onClick={() => { 
-              setActiveMenu('SETTINGS'); 
-              setActiveDistrict(''); 
-              setLatestUploadedCard(null); 
-            }} 
-            className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors ${activeMenu === 'SETTINGS' ? 'bg-emerald-700' : 'hover:bg-emerald-800'}`}
-          >
+          <button onClick={() => { setActiveMenu('SETTINGS'); setActiveDistrict(''); setLatestUploadedCard(null); }} className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors ${activeMenu === 'SETTINGS' ? 'bg-emerald-700' : 'hover:bg-emerald-800'}`}>
             <Settings size={18} /> PENGATURAN LINK
           </button>
 
-          <button 
-            onClick={() => { 
-              setActiveMenu('UPLOAD'); 
-              setActiveDistrict(''); 
-              setLatestUploadedCard(null); 
-            }} 
-            className={`w-full flex items-center gap-3 p-3 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold transition-colors mt-2`}
-          >
+          <button onClick={() => { setActiveMenu('UPLOAD'); setActiveDistrict(''); setLatestUploadedCard(null); }} className={`w-full flex items-center gap-3 p-3 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold transition-colors mt-2`}>
             <UploadCloud size={18} /> UPLOAD AI & BACA
           </button>
         </nav>
@@ -344,107 +301,137 @@ export default function App() {
 
       {/* ----------------- KONTEN KANAN ----------------- */}
       <main className="flex-1 flex flex-col h-full overflow-hidden">
-        <header className="bg-white shadow-sm p-4 flex items-center gap-4">
-          <button className="text-gray-500 hover:text-emerald-700" onClick={() => setSidebarOpen(!isSidebarOpen)}>
-            <Menu size={24} />
-          </button>
-          <h2 className="text-xl font-bold text-gray-800 tracking-wide">
-            {activeMenu === 'DASHBOARD' && 'DASHBOARD SISTEM'}
-            {activeMenu === 'UPLOAD' && 'UPLOAD FILE & ANALISIS AI'}
-            {activeMenu === 'SETTINGS' && 'PENGATURAN LINK GOOGLE DRIVE'}
-            {(activeMenu === 'VERKOM' || activeMenu === 'ABSEN') && `MENU ${activeMenu} ${activeDistrict ? `- KABUPATEN ${activeDistrict}` : ''}`}
-          </h2>
+        
+        <header className="bg-white shadow-sm p-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button className="text-gray-500 hover:text-emerald-700" onClick={() => setSidebarOpen(!isSidebarOpen)}><Menu size={24} /></button>
+            <h2 className="text-xl font-bold text-gray-800 tracking-wide">
+              {activeMenu === 'DASHBOARD' && 'DASHBOARD SISTEM'}
+              {activeMenu === 'UPLOAD' && 'UPLOAD FILE & ANALISIS AI'}
+              {activeMenu === 'SETTINGS' && 'PENGATURAN LINK GOOGLE DRIVE'}
+              {(activeMenu === 'VERKOM' || activeMenu === 'ABSEN') && `MENU ${activeMenu} ${activeDistrict ? `- KABUPATEN ${activeDistrict}` : ''}`}
+            </h2>
+          </div>
+          {/* INDIKATOR ADMIN */}
+          {isAdmin && (
+            <div className="flex items-center gap-2 bg-emerald-100 px-4 py-2 rounded-lg text-emerald-700 text-xs font-bold border border-emerald-200">
+              <ShieldCheck size={16}/> ADMIN AKTIF
+            </div>
+          )}
         </header>
 
         <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
           
-          {/* ================= TAMPILAN DASHBOARD ================= */}
+          {/* ================= TAMPILAN DASHBOARD LENGKAP ================= */}
           {activeMenu === 'DASHBOARD' && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
-                <div className="p-4 bg-emerald-100 text-emerald-700 rounded-full">
-                  <FolderOpen size={24} />
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4 hover:shadow-md transition-shadow">
+                  <div className="p-4 bg-emerald-100 text-emerald-700 rounded-full"><FolderOpen size={24} /></div>
+                  <div><p className="text-sm font-bold text-gray-500">TOTAL FILE</p><p className="text-3xl font-black text-gray-800">{stats.total}</p></div>
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-gray-500">TOTAL FILE</p>
-                  <p className="text-3xl font-black text-gray-800">{stats.total}</p>
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4 hover:shadow-md transition-shadow">
+                  <div className="p-4 bg-blue-100 text-blue-700 rounded-full"><FileCheck size={24} /></div>
+                  <div><p className="text-sm font-bold text-gray-500">DATA VERKOM</p><p className="text-3xl font-black text-gray-800">{stats.verkom}</p></div>
                 </div>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
-                <div className="p-4 bg-blue-100 text-blue-700 rounded-full">
-                  <FileCheck size={24} />
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-gray-500">DATA VERKOM</p>
-                  <p className="text-3xl font-black text-gray-800">{stats.verkom}</p>
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4 hover:shadow-md transition-shadow">
+                  <div className="p-4 bg-orange-100 text-orange-700 rounded-full"><FileText size={24} /></div>
+                  <div><p className="text-sm font-bold text-gray-500">DATA ABSENSI</p><p className="text-3xl font-black text-gray-800">{stats.absen}</p></div>
                 </div>
               </div>
 
-              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
-                <div className="p-4 bg-orange-100 text-orange-700 rounded-full">
-                  <FileText size={24} />
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-gray-500">DATA ABSENSI</p>
-                  <p className="text-3xl font-black text-gray-800">{stats.absen}</p>
-                </div>
+              {/* KOTAK INFORMASI SISTEM (DIKEMBALIKAN) */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 leading-relaxed">
+                <h3 className="text-lg font-bold mb-4 border-b pb-2">INFORMASI SISTEM</h3>
+                <p className="text-gray-600 mb-4">
+                  SELAMAT DATANG DI SISTEM E-ARSIP KALIMANTAN SELATAN. APLIKASI INI MENGGUNAKAN <strong className="text-emerald-700">GOOGLE DRIVE</strong> SEBAGAI PENYIMPANAN FILE DAN <strong className="text-emerald-700">GEMINI 2.5 FLASH</strong> UNTUK MEMBACA ISI PDF SECARA OTOMATIS.
+                </p>
+                <p className="text-sm text-gray-500 bg-gray-50 p-4 rounded-lg border">
+                  <strong>PANDUAN ADMIN:</strong> Masuk ke menu Pengaturan Link, masukkan password admin untuk membuka fitur sinkronisasi, dan Anda dapat memisahkan link drive antara berkas VERKOM dan ABSENSI.
+                </p>
               </div>
             </div>
           )}
 
-          {/* ================= TAMPILAN SETTINGS LINK ================= */}
+          {/* ================= TAMPILAN SETTINGS (LOGIN ADMIN & KELOLA LINK) ================= */}
           {activeMenu === 'SETTINGS' && (
             <div className="max-w-4xl mx-auto space-y-6">
-              <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-100">
-                <div className="flex items-center gap-3 mb-6 border-b pb-4">
-                  <div className="p-3 bg-blue-100 text-blue-700 rounded-lg">
-                    <LinkIcon size={24} />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-gray-800">MANAJEMEN LINK FOLDER DRIVE</h3>
-                    <p className="text-sm text-gray-500 font-semibold mt-1">SISTEM AKAN MEMBACA FOLDER BERLAPIS HINGGA KE AKARNYA.</p>
-                  </div>
+              
+              {/* JIKA BELUM LOGIN */}
+              {!isAdmin ? (
+                <div className="bg-white p-10 rounded-xl shadow-sm border border-gray-100 text-center max-w-md mx-auto mt-10">
+                  <div className="w-20 h-20 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center mx-auto mb-6"><Lock size={40}/></div>
+                  <h3 className="text-2xl font-black mb-2 text-gray-800">AKSES DIBATASI</h3>
+                  <p className="text-gray-500 text-sm mb-8 font-semibold">Silakan masukkan password admin untuk mengatur Link Google Drive.</p>
+                  
+                  <form onSubmit={handleLogin} className="space-y-4">
+                    <input type="password" placeholder="PASSWORD..." className="w-full p-4 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-center font-bold text-lg" value={passInput} onChange={(e) => setPassInput(e.target.value)} />
+                    <button type="submit" className="w-full bg-emerald-600 text-white p-4 rounded-lg font-bold text-lg hover:bg-emerald-700 transition-colors">LOGIN ADMIN</button>
+                    {authError && <p className="text-red-500 text-sm font-bold bg-red-50 p-2 rounded">{authError}</p>}
+                  </form>
                 </div>
-
-                {saveLinkStatus && (
-                  <div className={`mb-4 p-4 font-bold flex items-center gap-3 rounded-lg border ${
-                    saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('KESALAHAN') 
-                      ? 'bg-red-100 text-red-800 border-red-200' 
-                      : saveLinkStatus.includes('SELESAI') 
-                        ? 'bg-green-100 text-green-800 border-green-200' 
-                        : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'
-                  }`}>
-                    {isSyncing && <Loader2 className="animate-spin" size={20} />}
-                    {saveLinkStatus}
-                  </div>
-                )}
-
-                <div className="space-y-4">
-                  {KABUPATEN_KOTA.map(kab => (
-                    <div key={`link-${kab}`} className="flex flex-col md:flex-row gap-4 p-4 border border-gray-100 rounded-lg items-center hover:bg-gray-50 transition-colors">
-                      <div className="w-full md:w-1/4 font-bold text-gray-700">{kab}</div>
-                      <input 
-                        type="url" 
-                        placeholder="HTTPS://DRIVE.GOOGLE.COM/FOLDERS/..." 
-                        className="flex-1 px-4 py-3 border border-gray-300 rounded-md normal-case text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none" 
-                        value={folderLinks[kab] || ''} 
-                        onChange={(e) => setFolderLinks({...folderLinks, [kab]: e.target.value})} 
-                        disabled={isSyncing}
-                      />
-                      <button 
-                        onClick={() => handleSaveLink(kab)} 
-                        disabled={isSyncing || !folderLinks[kab]} 
-                        className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md disabled:opacity-50 flex items-center justify-center min-w-[160px]"
-                      >
-                        {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & SYNC'}
-                      </button>
+              ) : (
+                
+                /* JIKA SUDAH LOGIN ADMIN */
+                <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-100">
+                  <div className="flex items-center justify-between mb-6 border-b pb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-3 bg-blue-100 text-blue-700 rounded-lg"><LinkIcon size={24} /></div>
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-800">MANAJEMEN LINK FOLDER DRIVE</h3>
+                        <p className="text-sm text-gray-500 font-semibold mt-1">SISTEM AKAN MEMBACA FOLDER BERLAPIS HINGGA KE AKARNYA.</p>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+                    <button onClick={() => setIsAdmin(false)} className="text-sm font-bold text-red-500 bg-red-50 px-4 py-2 rounded-lg hover:bg-red-100">LOGOUT</button>
+                  </div>
 
-              {/* CARD MUNCUL SETELAH SYNC / UPLOAD BERHASIL */}
+                  {saveLinkStatus && (
+                    <div className={`mb-6 p-4 font-bold flex items-center gap-3 rounded-lg border ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('KESALAHAN') || saveLinkStatus.includes('TIDAK DITEMUKAN') ? 'bg-red-100 text-red-800 border-red-200' : saveLinkStatus.includes('SELESAI') ? 'bg-green-100 text-green-800 border-green-200' : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'}`}>
+                      {isSyncing && <Loader2 className="animate-spin" size={20} />}
+                      {saveLinkStatus}
+                    </div>
+                  )}
+
+                  <div className="space-y-8">
+                    {KABUPATEN_KOTA.map(kab => (
+                      <div key={`link-${kab}`} className="bg-gray-50 p-6 rounded-xl border border-gray-200">
+                        <h4 className="font-black text-lg text-emerald-800 mb-4 border-b pb-2">{kab}</h4>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          {/* INPUT LINK VERKOM */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold text-gray-600 flex items-center gap-2">
+                              <FileCheck size={14} className="text-emerald-600"/> LINK FOLDER VERKOM
+                            </label>
+                            <div className="flex flex-col gap-2">
+                              <input type="url" placeholder="HTTPS://DRIVE.GOOGLE.COM/FOLDERS/..." className="w-full px-4 py-3 border border-gray-300 rounded-md normal-case text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none bg-white" value={verkomLinks[kab] || ''} onChange={(e) => setVerkomLinks({...verkomLinks, [kab]: e.target.value})} disabled={isSyncing}/>
+                              <button onClick={() => handleSaveLink(kab, 'VERKOM')} disabled={isSyncing || !verkomLinks[kab]} className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-md disabled:opacity-50 text-sm">
+                                {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & SYNC VERKOM'}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* INPUT LINK ABSEN */}
+                          <div className="space-y-2">
+                            <label className="text-xs font-bold text-gray-600 flex items-center gap-2">
+                              <FileText size={14} className="text-blue-600"/> LINK FOLDER ABSENSI
+                            </label>
+                            <div className="flex flex-col gap-2">
+                              <input type="url" placeholder="HTTPS://DRIVE.GOOGLE.COM/FOLDERS/..." className="w-full px-4 py-3 border border-gray-300 rounded-md normal-case text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white" value={absenLinks[kab] || ''} onChange={(e) => setAbsenLinks({...absenLinks, [kab]: e.target.value})} disabled={isSyncing}/>
+                              <button onClick={() => handleSaveLink(kab, 'ABSEN')} disabled={isSyncing || !absenLinks[kab]} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md disabled:opacity-50 text-sm">
+                                {isSyncing ? 'SINKRONISASI...' : 'SIMPAN & SYNC ABSENSI'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* CARD MUNCUL SETELAH SYNC BERHASIL */}
               {latestUploadedCard && (
                 <div className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-xl shadow-sm flex items-start gap-4">
                   <CheckCircle className="text-emerald-500 mt-1" size={32} />
@@ -452,7 +439,7 @@ export default function App() {
                     <h4 className="text-sm font-bold text-emerald-800 mb-1">BERHASIL DITAMBAHKAN KE DATABASE</h4>
                     <p className="text-2xl font-black text-emerald-900">{latestUploadedCard.nama_sekolah}</p>
                     <p className="text-sm font-semibold text-emerald-700 mt-1">
-                      {latestUploadedCard.kecamatan} • {latestUploadedCard.kabupaten} • {latestUploadedCard.kategori}
+                      {latestUploadedCard.kecamatan} • {latestUploadedCard.kabupaten} • <span className="bg-emerald-200 px-2 py-1 rounded">{latestUploadedCard.kategori}</span>
                     </p>
                   </div>
                 </div>
@@ -460,31 +447,27 @@ export default function App() {
             </div>
           )}
 
-          {/* ================= TAMPILAN UPLOAD AI ================= */}
+          {/* ================= TAMPILAN UPLOAD AI (DIPERTAHANKAN) ================= */}
           {activeMenu === 'UPLOAD' && (
              <div className="max-w-2xl mx-auto space-y-6">
                <div className="bg-white p-8 rounded-xl text-center border border-gray-100 shadow-sm">
                  <h3 className="text-2xl font-black text-gray-800 mb-2">UPLOAD DOKUMEN PDF</h3>
+                 <p className="text-gray-500 font-semibold mb-8">SISTEM AI AKAN MEMBACA NAMA SEKOLAH, KECAMATAN, DAN BULAN SECARA OTOMATIS.</p>
                  
                  <div className="border-2 border-dashed border-emerald-400 rounded-xl p-12 bg-emerald-50 mb-6 mt-6">
                    <UploadCloud className="mx-auto text-emerald-500 mb-4" size={56} />
-                   <button 
-                     onClick={handleSimulateUpload} 
-                     disabled={isUploading} 
-                     className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-lg font-bold text-lg disabled:opacity-50"
-                   >
+                   <button onClick={handleSimulateUpload} disabled={isUploading} className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-lg font-bold text-lg disabled:opacity-50 shadow-md">
                      {isUploading ? 'MEMPROSES DENGAN AI...' : 'SIMULASIKAN UPLOAD'}
                    </button>
                  </div>
 
                  {uploadStatus && (
-                   <div className="mt-4 p-4 font-bold rounded-lg bg-blue-100 text-blue-800">
+                   <div className={`mt-4 p-4 font-bold rounded-lg ${uploadStatus.includes('SUKSES') ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'}`}>
                      {uploadStatus}
                    </div>
                  )}
                </div>
 
-               {/* CARD MUNCUL SETELAH UPLOAD BERHASIL */}
                {latestUploadedCard && (
                  <div className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-xl shadow-sm flex items-start gap-4">
                    <CheckCircle className="text-emerald-500 mt-1" size={32} />
@@ -492,7 +475,7 @@ export default function App() {
                      <h4 className="text-sm font-bold text-emerald-800 mb-1">DATA BARU TERDETEKSI</h4>
                      <p className="text-2xl font-black text-emerald-900">{latestUploadedCard.nama_sekolah}</p>
                      <p className="text-sm font-semibold text-emerald-700 mt-1">
-                       {latestUploadedCard.kecamatan} • {latestUploadedCard.kabupaten}
+                       {latestUploadedCard.kecamatan} • {latestUploadedCard.kabupaten} • {latestUploadedCard.kategori}
                      </p>
                    </div>
                  </div>
@@ -500,7 +483,7 @@ export default function App() {
              </div>
           )}
 
-          {/* ================= TAMPILAN TABEL DATA ================= */}
+          {/* ================= TAMPILAN TABEL DATA LENGKAP ================= */}
           {(activeMenu === 'VERKOM' || activeMenu === 'ABSEN') && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 h-full flex flex-col">
               
@@ -511,12 +494,17 @@ export default function App() {
                   </div>
                   <input 
                     type="text" 
-                    placeholder="CARI NAMA SEKOLAH ATAU KECAMATAN..." 
+                    placeholder={`CARI NAMA SEKOLAH ATAU KECAMATAN...`} 
                     value={searchQuery} 
                     onChange={(e) => setSearchQuery(e.target.value)} 
-                    className="w-full pl-12 pr-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 uppercase font-semibold text-sm" 
+                    className="w-full pl-12 pr-4 py-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 uppercase font-semibold text-sm shadow-sm" 
                   />
                 </div>
+                {!activeDistrict && (
+                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-4 py-2 rounded-lg border border-orange-200">
+                    PILIH KABUPATEN DI SIDEBAR UNTUK MELIHAT DATA.
+                  </span>
+                )}
               </div>
 
               <div className="overflow-x-auto flex-1">
@@ -526,32 +514,38 @@ export default function App() {
                       <th className="p-4 font-black border-b text-center">NO</th>
                       <th className="p-4 font-black border-b">NAMA SEKOLAH</th>
                       <th className="p-4 font-black border-b">KECAMATAN</th>
+                      <th className="p-4 font-black border-b">BULAN / TAHUN</th>
                       <th className="p-4 font-black border-b text-center">AKSI</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredData.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="p-10 text-center text-gray-500 font-bold">
-                          TIDAK ADA DATA.
+                        <td colSpan={5} className="p-10 text-center text-gray-500 font-bold text-lg">
+                          TIDAK ADA DATA {activeMenu} YANG DITEMUKAN.
                         </td>
                       </tr>
                     ) : (
                       filteredData.map((row, i) => (
-                        <tr key={row.id} className="border-b hover:bg-emerald-50">
-                          <td className="p-4 font-bold text-center">{i + 1}</td>
+                        <tr key={row.id} className="border-b hover:bg-emerald-50 transition-colors">
+                          <td className="p-4 font-bold text-center text-gray-600">{i + 1}</td>
                           <td className="p-4 font-bold text-gray-900 text-lg">{row.nama_sekolah}</td>
-                          <td className="p-4 text-sm font-semibold">{row.kecamatan}</td>
+                          <td className="p-4 text-sm font-semibold text-gray-700">{row.kecamatan}</td>
+                          <td className="p-4 text-sm">
+                            <span className="bg-blue-100 text-blue-800 px-3 py-1.5 rounded-md text-xs font-bold border border-blue-200">
+                              {row.bulan} {row.tahun}
+                            </span>
+                          </td>
                           <td className="p-4 text-center">
                             <button 
                               onClick={() => { 
                                 if (row.drive_url && row.drive_url !== "#") {
                                   window.open(row.drive_url, '_blank'); 
                                 } else {
-                                  alert('File asli belum tersedia. Ini adalah data simulasi.'); 
+                                  alert('File asli belum tersedia. Ini adalah data hasil simulasi.'); 
                                 }
                               }} 
-                              className="inline-flex items-center gap-2 text-xs bg-gray-800 hover:bg-emerald-600 text-white font-bold px-4 py-2 rounded-lg"
+                              className={`inline-flex items-center gap-2 text-xs text-white font-bold px-4 py-2 rounded-lg transition-colors shadow-sm ${activeMenu === 'VERKOM' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}
                             >
                               <Download size={16} /> UNDUH
                             </button>
@@ -561,6 +555,10 @@ export default function App() {
                     )}
                   </tbody>
                 </table>
+              </div>
+              <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
+                <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
+                <span>SISTEM E-ARSIP KALSEL V2.0</span>
               </div>
             </div>
           )}

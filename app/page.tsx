@@ -42,7 +42,8 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
   try {
     do {
       const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='image/jpeg' or mimeType='image/png' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
-      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? \`&pageToken=\${pageToken}\` : ''}`;
+      // PERBAIKAN TYPO DI BARIS INI: Penghapusan backslash yang bikin Vercel Error Merah
+      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true` + (pageToken ? `&pageToken=${pageToken}` : '');
       
       const res = await fetch(url);
       const data = await res.json();
@@ -593,7 +594,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V8.5 (DETEKTOR & TANGKAP PAKSA)</span>
+                <span>SISTEM E-ARSIP KALSEL V8.5 (CRUD & TANGKAP PAKSA)</span>
               </div>
             </div>
           )}

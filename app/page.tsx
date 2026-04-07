@@ -9,9 +9,6 @@ import {
   Settings, Link as LinkIcon, CheckCircle, Loader2, Lock, ShieldCheck, Database, AlertTriangle, Trash2, Edit, Save
 } from 'lucide-react';
 
-// ============================================================================
-// 1. KONFIGURASI FIREBASE (REALTIME DATABASE)
-// ============================================================================
 const firebaseConfig = {
   apiKey: "AIzaSyDStGoBoQXhwkwA-XFntQqO5tyFxQAY9_I",
   authDomain: "arsip-pkhkalsel.firebaseapp.com",
@@ -38,9 +35,6 @@ const BULAN_ORDER: Record<string, number> = {
   "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, "NOVEMBER": 11, "DESEMBER": 12
 };
 
-// ============================================================================
-// 2. RADAR SCANNER (REKURSIF MULTI FORMAT)
-// ============================================================================
 const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise<any[]> => {
   let allFiles: any[] = [];
   let pageToken = ''; 
@@ -48,7 +42,7 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
   try {
     do {
       const query = `('${folderId}' in parents) and (mimeType='application/pdf' or mimeType='image/jpeg' or mimeType='image/png' or mimeType='application/vnd.google-apps.folder') and trashed=false`;
-      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? `&pageToken=${pageToken}` : ''}`;
+      const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&key=${apiKey}&fields=nextPageToken,files(id,name,mimeType)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true${pageToken ? \`&pageToken=\${pageToken}\` : ''}`;
       
       const res = await fetch(url);
       const data = await res.json();
@@ -69,9 +63,6 @@ const scanFoldersRecursively = async (folderId: string, apiKey: string): Promise
   return allFiles;
 };
 
-// ============================================================================
-// 3. KOMPONEN UTAMA APLIKASI
-// ============================================================================
 export default function App() {
   const [filesData, setFilesData] = useState<any[]>([]);
   const [isSidebarOpen, setSidebarOpen] = useState(true);
@@ -94,12 +85,9 @@ export default function App() {
   const [saveLinkStatus, setSaveLinkStatus] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // --- STATE UNTUK CRUD (EDIT DATA MANUAL) ---
+  // STATE UNTUK CRUD
   const [editingData, setEditingData] = useState<any>(null);
 
-  // ============================================================================
-  // 4. MENGAMBIL DATA FIREBASE (REALTIME)
-  // ============================================================================
   useEffect(() => {
     const dbRef = ref(db, 'kalsel_files');
     const unsubscribeFiles = onValue(dbRef, (snapshot) => {
@@ -125,9 +113,6 @@ export default function App() {
     return () => { unsubscribeFiles(); unsubscribeVLinks(); unsubscribeALinks(); };
   }, []);
 
-  // ============================================================================
-  // 5. PENCARIAN & SORTIR CERDAS
-  // ============================================================================
   const filteredData = useMemo(() => {
     let result = filesData.filter(item => {
       const matchMenu = item.kategori === activeMenu;
@@ -162,9 +147,6 @@ export default function App() {
     return { total, verkom, absen };
   }, [filesData]);
 
-  // ============================================================================
-  // 6. FUNGSI ADMIN: CRUD & SINKRONISASI
-  // ============================================================================
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (passInput === "Kalsel 123") {
@@ -184,21 +166,16 @@ export default function App() {
     }
   };
 
-  // CRUD: FUNGSI HAPUS 1 BARIS
   const handleDeleteItem = async (id: string, nama: string) => {
     if (window.confirm(`Yakin ingin menghapus arsip: ${nama}?`)) {
       await remove(ref(db, `kalsel_files/${id}`));
     }
   };
 
-  // CRUD: FUNGSI SIMPAN EDIT
   const handleSaveEdit = async () => {
     if (editingData) {
-      await set(ref(db, `kalsel_files/${editingData.id}`), {
-        ...editingData,
-        // Hapus properties lokal jika ada
-      });
-      setEditingData(null); // Tutup modal
+      await set(ref(db, `kalsel_files/${editingData.id}`), { ...editingData });
+      setEditingData(null); 
     }
   };
 
@@ -211,12 +188,12 @@ export default function App() {
     
     try {
       const folderIdMatch = currentLink.match(/folders\/([a-zA-Z0-9-_]+)/);
-      if (!folderIdMatch) throw new Error("Link Drive tidak valid.");
+      if (!folderIdMatch) throw new Error("Link Drive tidak valid. Pastikan format /folders/");
       const rootFolderId = folderIdMatch[1];
 
       await set(ref(db, `kalsel_links/${kategori}/${kabupaten}`), currentLink);
       
-      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS... (Mencari PDF & Gambar)`);
+      setSaveLinkStatus(`🔍 MENGGALI FOLDER ${kabupaten} BERLAPIS...`);
       const allFoundFiles = await scanFoldersRecursively(rootFolderId, DRIVE_API_KEY);
       
       if(allFoundFiles.length === 0) {
@@ -229,7 +206,6 @@ export default function App() {
       for (let i = 0; i < allFoundFiles.length; i++) {
         const file = allFoundFiles[i];
         
-        // 1. CEK GANDA ID DRIVE (Mencegah upload file yang persis sama)
         const existingDriveIds = filesData.map(f => f.drive_id);
         if (existingDriveIds.includes(file.id)) {
           setSaveLinkStatus(`⏭️ SKIP (${i+1}/${allFoundFiles.length}): File "${file.name}" sudah ada.`);
@@ -242,32 +218,37 @@ export default function App() {
 
         while (!isSuccess && retryCount < 3) {
           try {
-            setSaveLinkStatus(`🚀 AI (MULTI-KEY) MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
+            setSaveLinkStatus(`🚀 AI MEMBACA (${i+1}/${allFoundFiles.length}): "${file.name}"...`);
 
             const response = await fetch('/api/sync', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ file: file, kabupaten, kategori, driveApiKey: DRIVE_API_KEY })
             });
 
+            // =========================================================================
+            // INI ADALAH PENJAGA GANG KITA! JIKA API ERROR, DIA AKAN BERTERIAK!
             if (!response.ok) {
               const errData = await response.json().catch(()=>({error:""}));
               const errMsg = errData.error || "";
               
               if (errMsg.includes("429") || errMsg.includes("QUOTA") || response.status === 429) {
-                 setSaveLinkStatus(`⚡ MENGGANTI KUNCI API... (Mencoba Ulang)`);
+                 setSaveLinkStatus(`⚡ MENGGANTI KUNCI API...`);
                  await new Promise(r => setTimeout(r, 3000)); 
                  retryCount++;
                  continue; 
               } else {
-                 setSaveLinkStatus(`⚠️ GAGAL BACA "${file.name}". Melewati...`);
-                 break; 
+                 // JIKA ERRORNYA FATAL (MISAL API KEY KOSONG KARENA BELUM REDEPLOY)
+                 alert(`🛑 PROSES TERHENTI OTOMATIS!\n\nFile: ${file.name}\nError: ${errMsg}\n\nBapak WAJIB melakukan REDEPLOY di Vercel jika baru menambahkan Environment Variables!`);
+                 setSaveLinkStatus(`❌ BERHENTI KARENA ERROR KONFIGURASI.`);
+                 setIsSyncing(false); // MATIKAN LOADING
+                 return; // BERHENTI TOTAL, JANGAN PURA-PURA SELESAI
               }
             }
+            // =========================================================================
 
             const result = await response.json();
             if (result.success) {
               
-              // Cek Ganda Nama Sekolah & Bulan (Kecuali jika tulisannya MEMBUTUHKAN EDIT MANUAL)
               const isDuplicateData = filesData.some(f => 
                 f.nama_sekolah === result.data.nama_sekolah && 
                 f.bulan === result.data.bulan && 
@@ -360,10 +341,6 @@ export default function App() {
                   <label className="text-xs font-bold text-gray-500">TAHUN</label>
                   <input type="text" className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-emerald-500 font-bold" value={editingData.tahun} onChange={e => setEditingData({...editingData, tahun: e.target.value})} />
                 </div>
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-gray-500">LINK ASLI FILE (INFO)</label>
-                <input type="text" disabled className="w-full p-3 border rounded-lg bg-gray-100 text-xs normal-case" value={editingData.drive_url} />
               </div>
               <button onClick={handleSaveEdit} className="w-full bg-emerald-600 text-white p-4 rounded-xl font-black mt-4 hover:bg-emerald-700 flex items-center justify-center gap-2">
                 <Save size={20}/> SIMPAN PERUBAHAN
@@ -485,7 +462,7 @@ export default function App() {
                   </div>
 
                   {saveLinkStatus && (
-                    <div className={`mb-6 p-4 font-bold flex items-center gap-3 rounded-lg border shadow-sm ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('ERROR') ? 'bg-red-100 text-red-800 border-red-200' : saveLinkStatus.includes('DITOLAK') || saveLinkStatus.includes('SKIP') ? 'bg-orange-100 text-orange-800 border-orange-200' : saveLinkStatus.includes('SELESAI') ? 'bg-green-100 text-green-800 border-green-200' : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'}`}>
+                    <div className={`mb-6 p-4 font-bold flex items-center gap-3 rounded-lg border shadow-sm ${saveLinkStatus.includes('GAGAL') || saveLinkStatus.includes('ERROR') || saveLinkStatus.includes('BERHENTI') ? 'bg-red-100 text-red-800 border-red-200' : saveLinkStatus.includes('DITOLAK') || saveLinkStatus.includes('SKIP') ? 'bg-orange-100 text-orange-800 border-orange-200' : saveLinkStatus.includes('SELESAI') ? 'bg-green-100 text-green-800 border-green-200' : 'bg-blue-100 text-blue-800 border-blue-200 animate-pulse'}`}>
                       {isSyncing && saveLinkStatus.includes('PEREKAMAN') ? <Database className="animate-bounce" size={20} /> : isSyncing && (saveLinkStatus.includes('DITOLAK') || saveLinkStatus.includes('SKIP')) ? <AlertTriangle size={20}/> : (isSyncing && <Loader2 className="animate-spin" size={20} />)}
                       {saveLinkStatus}
                     </div>
@@ -593,7 +570,6 @@ export default function App() {
                           </td>
                           <td className="p-4 text-center">
                             <div className="flex justify-center gap-2">
-                              {/* TOMBOL CRUD (EDIT & HAPUS) - HANYA MUNCUL JIKA ADMIN LOGIN */}
                               {isAdmin && (
                                 <>
                                   <button onClick={() => setEditingData(row)} className="inline-flex items-center gap-1 text-xs text-white bg-orange-500 hover:bg-orange-600 font-bold px-3 py-2 rounded-lg shadow-sm">
@@ -604,7 +580,6 @@ export default function App() {
                                   </button>
                                 </>
                               )}
-                              {/* TOMBOL UNDUH - SELALU MUNCUL */}
                               <button onClick={() => { if (row.drive_url && row.drive_url !== "#") window.open(row.drive_url, '_blank'); else alert('Data simulasi tidak ada file asli.'); }} className={`inline-flex items-center gap-1 text-xs text-white font-bold px-3 py-2 rounded-lg shadow-sm ${activeMenu === 'VERKOM' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
                                 <Download size={14} /> {isAdmin ? '' : 'UNDUH'}
                               </button>
@@ -618,7 +593,7 @@ export default function App() {
               </div>
               <div className="bg-gray-100 p-4 border-t border-gray-200 text-sm text-gray-600 font-bold flex justify-between">
                 <span>TOTAL DATA TAMPIL: {filteredData.length}</span>
-                <span>SISTEM E-ARSIP KALSEL V8.0 (CRUD ADMIN & TANGKAP PAKSA)</span>
+                <span>SISTEM E-ARSIP KALSEL V8.5 (DETEKTOR & TANGKAP PAKSA)</span>
               </div>
             </div>
           )}
